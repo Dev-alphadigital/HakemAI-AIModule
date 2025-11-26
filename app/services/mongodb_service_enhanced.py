@@ -40,8 +40,8 @@ class EnhancedMongoDBService:
         """Connect to MongoDB and initialize collections"""
         try:
             # Get MongoDB connection string from environment
-            mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-            database_name = os.getenv("MONGODB_DATABASE", "hakemAI")
+            mongodb_url = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+            database_name = os.getenv("MONGODB_DATABASE") or os.getenv("MONGO_DB_NAME", "hakemAI")
 
             logger.info(f"🔌 Connecting to MongoDB: {mongodb_url}")
 

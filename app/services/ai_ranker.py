@@ -1874,8 +1874,7 @@ async def _build_comprehensive_comparison(
         'insights': [
             f"Best value provider: {summary['best_value']}",
             f"Lowest premium: {min(premiums):,.2f} SAR" if premiums else "N/A",
-            f"Average score: {sum(scores)/len(scores):.1f}/100" if scores else "N/A",
-            f"Hakim Score integration: Enabled"
+            f"Average score: {sum(scores)/len(scores):.1f}/100" if scores else "N/A"
         ]
     }
     
