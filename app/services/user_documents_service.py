@@ -2,9 +2,10 @@
 User Documents Service
 ======================
 Stores raw PDF files uploaded by users in MongoDB.
-No connection to comparison_id - just user documents.
+No0 connection to comparison_id - just user documents.
 """
-
+from dotenv import load_dotenv
+load_dotenv()
 import os
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ConnectionFailure

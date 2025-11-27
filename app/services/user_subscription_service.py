@@ -4,7 +4,8 @@ User Subscription Service
 Handles user account status and subscription limit checks for FastAPI.
 Connects to MongoDB to check user subscription status before allowing comparisons.
 """
-
+from dotenv import load_dotenv
+load_dotenv()
 import os
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Dict, Any, Optional
@@ -24,6 +25,7 @@ class UserSubscriptionService:
         self.client = None
         self.database = None
         self.users_collection = None
+        self._connected = False
 
         # Subscription plan limits (matching NestJS backend)
         self.SUBSCRIPTION_PLANS = {
@@ -45,26 +47,21 @@ class UserSubscriptionService:
         """Connect to MongoDB and initialize users collection"""
         try:
             # Get MongoDB connection string from environment
-            # Use the same MongoDB as NestJS backend
-            # NestJS uses MONGO_URI, FastAPI might use MONGODB_URL
-            mongodb_url = os.getenv(
-                "MONGO_URI", os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-            )
+            # Priority: MONGO_URI first, then MONGODB_URL
+            mongodb_url = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL")
+            
+            if not mongodb_url:
+                raise ValueError(
+                    "MongoDB connection string not found. "
+                    "Please set MONGO_URI or MONGODB_URL environment variable."
+                )
 
             # Extract database name from URI or use environment variable
-            # MongoDB URI format: mongodb://host:port/database_name?options
-            # OR: mongodb://host:port/ (no database name in URI)
             # Priority: 1. MONGODB_DATABASE env var, 2. MONGO_DB_NAME env var, 3. Extract from URI, 4. Default
             database_name = os.getenv("MONGODB_DATABASE") or os.getenv("MONGO_DB_NAME")
 
             if not database_name:
                 # Try to extract from URI if database name is in the path
-                # MongoDB URI can be:
-                # - mongodb://localhost:27017/database_name
-                # - mongodb://localhost:27017/database_name?options
-                # - mongodb://localhost:27017/ (no database)
-
-                # Parse the URI to extract database name
                 try:
                     from urllib.parse import urlparse
 
@@ -86,15 +83,17 @@ class UserSubscriptionService:
                 logger.warning(
                     f"⚠️  No database name specified, using default: {database_name}"
                 )
-                logger.warning(
-                    f"   If this is wrong, set MONGODB_DATABASE environment variable"
-                )
 
             logger.info(f"🔌 Connecting to MongoDB for user subscription checks")
-            logger.info(f"   URL: {mongodb_url}")
+            logger.info(f"   URL: {mongodb_url[:20]}...{mongodb_url[-20:]}")  # Mask connection string
             logger.info(f"   Database: {database_name}")
 
-            self.client = AsyncIOMotorClient(mongodb_url)
+            self.client = AsyncIOMotorClient(
+                mongodb_url,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=20000,
+            )
             self.database = self.client[database_name]
 
             # Initialize users collection (same as NestJS backend)
@@ -123,15 +122,25 @@ class UserSubscriptionService:
                 )
                 logger.warning(f"   Available collections: {collections}")
 
+            self._connected = True
+
         except Exception as e:
             logger.error(f"❌ Failed to connect to MongoDB: {e}")
+            self._connected = False
             raise
 
     async def disconnect(self):
         """Disconnect from MongoDB"""
         if self.client:
             self.client.close()
+            self._connected = False
             logger.info("🔌 Disconnected from MongoDB")
+
+    async def ensure_connected(self):
+        """Ensure MongoDB connection is established before queries"""
+        if not self._connected or self.users_collection is None:
+            logger.warning("⚠️  MongoDB not connected, attempting to connect...")
+            await self.connect()
 
     async def check_user_can_compare(
         self, user_id: str, files_count: int
@@ -155,6 +164,9 @@ class UserSubscriptionService:
             HTTPException if user not found or validation fails
         """
         try:
+            # Ensure connection before querying
+            await self.ensure_connected()
+
             # Validate ObjectId format
             if not ObjectId.is_valid(user_id):
                 logger.error(f"❌ Invalid user ID format: {user_id}")
@@ -405,6 +417,9 @@ class UserSubscriptionService:
             bool: True if successful, False otherwise
         """
         try:
+            # Ensure connection before querying
+            await self.ensure_connected()
+
             # Get user first to check if unlimited
             user = await self.users_collection.find_one({"_id": ObjectId(user_id)})
 
