@@ -90,6 +90,12 @@ class BorderedDocTemplate(BaseDocTemplate):
 class PDFGeneratorService:
     """
     Service for generating comprehensive PDF reports from comparison data.
+    
+    ✨ ENHANCED VERSION with:
+    - Strategic 1-page Executive Memo for decision makers
+    - Detailed Comparison Analysis with risk assessment, value optimization
+    - Enhanced formatting and professional styling
+    - Comprehensive error handling and validation
     """
     
     def __init__(self):
@@ -103,7 +109,7 @@ class PDFGeneratorService:
         self.page_width, self.page_height = letter
         self.styles = getSampleStyleSheet()
         self._setup_custom_styles()
-        logger.info("✅ PDF Generator Service initialized")
+        logger.info("✅ PDF Generator Service initialized (Enhanced Version)")
     
     def _setup_custom_styles(self):
         """Setup custom paragraph styles for professional formatting."""
@@ -268,6 +274,8 @@ class PDFGeneratorService:
         """
         Generate comprehensive PDF report from comparison data.
         
+        ✨ ENHANCED with Strategic Memo and Detailed Analysis sections
+        
         Args:
             comparison_data: Complete comparison data from API
             comparison_id: Comparison ID for filename
@@ -314,14 +322,25 @@ class PDFGeneratorService:
                 story.append(Paragraph("Insurance Quote Comparison Report", self.styles['CustomTitle']))
                 story.append(PageBreak())
             
-            # Summary section (no page break, just spacing)
+            # ✨ STRATEGIC MEMO: 1-page Executive Brief (high-level summary)
             try:
-                logger.info("📄 Building summary section...")
-                story.extend(self._build_summary_section(comparison_data))
-                story.append(Spacer(1, 0.3*inch))
-                logger.info("✅ Summary section built successfully")
+                logger.info("📄 Building strategic executive memo (1-page brief)...")
+                story.extend(self._build_strategic_memo(comparison_data))
+                logger.info("✅ Strategic memo built successfully")
             except Exception as e:
-                logger.error(f"❌ Error building summary section: {e}")
+                logger.error(f"❌ Error building strategic memo: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # ✨ DETAILED ANALYSIS: Granular technical report with recommendations
+            # (Page break handled inside _build_detailed_comparison_factors)
+            try:
+                logger.info("📄 Building detailed comparison factors...")
+                story.extend(self._build_detailed_comparison_factors(comparison_data))
+                story.append(Spacer(1, 0.3*inch))
+                logger.info("✅ Detailed comparison factors built successfully")
+            except Exception as e:
+                logger.error(f"❌ Error building detailed comparison factors: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
             
@@ -372,7 +391,7 @@ class PDFGeneratorService:
             doc.build(story)
             buffer.seek(0)
             
-            logger.info(f"✅ Generated PDF for comparison: {comparison_id}")
+            logger.info(f"✅ Generated enhanced PDF for comparison: {comparison_id}")
             return buffer
             
         except IndexError as e:
@@ -409,8 +428,464 @@ class PDFGeneratorService:
             story.append(Spacer(1, 0.5*inch))
         
         # Centered title
-        title = Paragraph("AI Powered Comparsion Report", self.styles['CustomTitle'])
+        title = Paragraph("AI Powered Comparison Report", self.styles['CustomTitle'])
         story.append(title)
+        
+        return story
+    
+    def _build_strategic_memo(self, comparison_data: Dict[str, Any]) -> List:
+        """
+        ✨ STRATEGIC MEMO: 1-page high-level Executive Brief for decision makers.
+        Optimized to fit exactly 1 page with concise strategic insights.
+        """
+        story = []
+        
+        # Memo header - smaller to save space
+        memo_header = Paragraph("EXECUTIVE BRIEF", self.styles['CustomTitle'])
+        story.append(memo_header)
+        story.append(Spacer(1, 0.15*inch))
+        
+        # To/From/Date/Subject section - more compact
+        memo_info_style = ParagraphStyle(
+            'MemoInfo',
+            parent=self.styles['Normal'],
+            fontSize=9,
+            textColor=colors.black,
+            spaceAfter=3,
+            leftIndent=0.3*inch
+        )
+        
+        memo_info = [
+            f"<b>TO:</b> Decision Makers | <b>FROM:</b> HAKEM.AI Platform | <b>DATE:</b> {datetime.now().strftime('%B %d, %Y')}",
+            f"<b>SUBJECT:</b> Insurance Quote Comparison - Strategic Recommendation"
+        ]
+        
+        for info in memo_info:
+            story.append(Paragraph(info, memo_info_style))
+        
+        story.append(Spacer(1, 0.15*inch))
+        
+        # Executive Summary - Compact version
+        summary = comparison_data.get("summary", {})
+        key_differences = comparison_data.get("key_differences", {})
+        
+        story.append(Paragraph("STRATEGIC ANALYSIS", self.styles['SectionHeading']))
+        story.append(Spacer(1, 0.08*inch))
+        
+        # Get key metrics
+        ranking = summary.get("ranking", [])
+        total_providers = len(ranking)
+        
+        if ranking:
+            best_provider = ranking[0] if ranking else {}
+            best_name = best_provider.get("company", "N/A")
+            best_score = best_provider.get("score", 0)
+            best_premium = best_provider.get("premium", 0)
+            
+            # Calculate price range
+            premiums = [r.get("premium", 0) for r in ranking if isinstance(r, dict)]
+            price_range_low = min(premiums) if premiums else 0
+            price_range_high = max(premiums) if premiums else 0
+            price_variance = ((price_range_high - price_range_low) / price_range_low * 100) if price_range_low > 0 else 0
+            
+            # Strategic overview - more concise
+            overview_text = f"""
+            Analyzed <b>{total_providers} providers</b>. <b>{best_name}</b> ranks #1 with score {best_score:.1f} at SAR {best_premium:,.2f}. 
+            Premium variance: {price_variance:.1f}% (SAR {price_range_low:,.2f} - SAR {price_range_high:,.2f}).
+            """
+            story.append(Paragraph(overview_text, self.styles['CustomBodyText']))
+            story.append(Spacer(1, 0.1*inch))
+        
+        # Strategic Recommendation - more compact
+        recommendation = key_differences.get("recommendation", "")
+        recommendation_reasoning = key_differences.get("recommendation_reasoning", "")
+        
+        if recommendation:
+            rec_text = f"""
+            <b>Recommendation:</b> {recommendation}<br/>
+            <b>Rationale:</b> {recommendation_reasoning[:150] if recommendation_reasoning else 'Best balance of coverage, price, and policy terms.'}...
+            """
+            story.append(Paragraph(rec_text, self.styles['Highlight']))
+            story.append(Spacer(1, 0.1*inch))
+        
+        # Top Providers Comparison - Compact table
+        if len(ranking) >= 2:
+            story.append(Paragraph("PROVIDER COMPARISON", self.styles['SubsectionHeading']))
+            story.append(Spacer(1, 0.08*inch))
+            
+            alt_data = [["Rank", "Provider", "Score", "Premium (SAR)"]]
+            
+            for i, provider in enumerate(ranking[:4], 1):  # Top 4 providers
+                if isinstance(provider, dict):
+                    rank = str(i)
+                    company = provider.get("company", "N/A")
+                    score = f"{provider.get('score', 0):.1f}"
+                    premium = f"{provider.get('premium', 0):,.2f}"
+                    
+                    # Create smaller font paragraph for company name
+                    company_style = ParagraphStyle('CompactBody', parent=self.styles['CustomBodyText'], fontSize=8)
+                    company_para = Paragraph(company, company_style)
+                    alt_data.append([rank, company_para, score, premium])
+            
+            if len(alt_data) > 1:
+                available_width = self.page_width - 1.5*inch
+                alt_table = Table(alt_data, colWidths=[
+                    available_width * 0.12,
+                    available_width * 0.42,
+                    available_width * 0.20,
+                    available_width * 0.26
+                ])
+                alt_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), HexColor('#4A7C2A')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('WORDWRAP', (0, 0), (-1, -1), True),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 8),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#F5F5F5')]),
+                ]))
+                story.append(alt_table)
+                story.append(Spacer(1, 0.1*inch))
+        
+        # Critical Decision Factors - Compact
+        story.append(Paragraph("KEY DECISION FACTORS", self.styles['SubsectionHeading']))
+        story.append(Spacer(1, 0.08*inch))
+        
+        # Build decision factors from analytics
+        analytics = comparison_data.get("analytics", {})
+        statistics = analytics.get("statistics", {})
+        data_table = comparison_data.get("data_table", {})
+        rows = data_table.get("rows", [])
+        
+        factors = []
+        
+        if statistics.get("average_premium"):
+            avg_premium = statistics.get("average_premium", 0)
+            factors.append(f"• <b>Cost:</b> Market avg SAR {avg_premium:,.2f}")
+        
+        # Coverage quality - use data_table rows to get actual benefits count
+        if rows:
+            benefits_counts = []
+            for row in rows:
+                if isinstance(row, dict):
+                    benefits_val = row.get("benefits") or row.get("benefits_count") or 0
+                    if isinstance(benefits_val, list):
+                        benefits_counts.append(len(benefits_val))
+                    else:
+                        benefits_counts.append(int(benefits_val) if benefits_val else 0)
+            top_benefits_count = max(benefits_counts) if benefits_counts else 0
+            if top_benefits_count > 0:
+                factors.append(f"• <b>Coverage:</b> Up to {top_benefits_count} benefits offered")
+        
+        # Risk factors
+        factors.append(f"• <b>Risk:</b> Review exclusions carefully")
+        
+        # Policy flexibility
+        factors.append(f"• <b>Terms:</b> Verify subjectivities & conditions")
+        
+        # Create compact style for factors
+        compact_style = ParagraphStyle('CompactFactors', parent=self.styles['CustomBodyText'], fontSize=9, spaceAfter=3)
+        for factor in factors:
+            story.append(Paragraph(factor, compact_style))
+        
+        story.append(Spacer(1, 0.1*inch))
+        
+        # Next Steps - More compact
+        story.append(Paragraph("NEXT ACTIONS", self.styles['SubsectionHeading']))
+        story.append(Spacer(1, 0.08*inch))
+        
+        next_steps = [
+            "1. Review detailed technical analysis (following pages)",
+            "2. Validate coverage against business requirements",
+            "3. Consult legal team on exclusions & terms",
+            "4. Request final binding quotes from top providers"
+        ]
+        
+        compact_steps_style = ParagraphStyle('CompactSteps', parent=self.styles['CustomBodyText'], fontSize=9, spaceAfter=3)
+        for step in next_steps:
+            story.append(Paragraph(step, compact_steps_style))
+        
+        return story
+    
+    def _build_detailed_comparison_factors(self, comparison_data: Dict[str, Any]) -> List:
+        """
+        ✨ DETAILED ANALYSIS: Granular technical report with recommendations.
+        Comprehensive comparison of all factors with technical insights.
+        """
+        story = []
+        
+        # Clear section header for Detailed Analysis
+        story.append(PageBreak())  # Ensure detailed analysis starts on new page
+        detail_title = Paragraph("DETAILED TECHNICAL ANALYSIS", self.styles['CustomTitle'])
+        story.append(detail_title)
+        story.append(Spacer(1, 0.1*inch))
+        
+        # Subtitle explaining this is the detailed analysis section
+        subtitle_style = ParagraphStyle(
+            'DetailSubtitle',
+            parent=self.styles['Normal'],
+            fontSize=10,
+            textColor=colors.grey,
+            alignment=TA_CENTER,
+            spaceAfter=8
+        )
+        subtitle = Paragraph("Comprehensive Comparison with Technical Recommendations", subtitle_style)
+        story.append(subtitle)
+        story.append(Spacer(1, 0.15*inch))
+        
+        summary = comparison_data.get("summary", {})
+        ranking = summary.get("ranking", [])
+        side_by_side = comparison_data.get("side_by_side", {})
+        key_differences = comparison_data.get("key_differences", {})
+        data_table = comparison_data.get("data_table", {})
+        rows = data_table.get("rows", [])
+        
+        # 1. Coverage Analysis
+        story.append(Paragraph("1. Coverage Analysis", self.styles['SubsectionHeading']))
+        story.append(Spacer(1, 0.1*inch))
+        
+        if rows:
+            # Coverage comparison table - use data_table rows for accurate data
+            coverage_data = [["Provider", "Coverage Limit (SAR)", "Benefits Count", "Coverage Quality"]]
+            
+            for row in rows[:5]:  # Top 5 providers
+                if isinstance(row, dict):
+                    name = row.get("provider_name") or row.get("provider") or row.get("company") or "N/A"
+                    
+                    # Get coverage value
+                    coverage_val = row.get("coverage") or row.get("coverage_limit") or 0
+                    if isinstance(coverage_val, str):
+                        # Extract number from string like "SR 1,564,652,306"
+                        numbers = re.findall(r'[\d,]+', str(coverage_val).replace(" ", ""))
+                        if numbers:
+                            coverage = float(numbers[0].replace(",", ""))
+                        else:
+                            coverage = 0
+                    else:
+                        coverage = float(coverage_val) if coverage_val else 0
+                    
+                    # Get benefits count
+                    benefits_val = row.get("benefits") or row.get("benefits_count") or 0
+                    if isinstance(benefits_val, list):
+                        benefits = len(benefits_val)
+                    else:
+                        benefits = int(benefits_val) if benefits_val else 0
+                    
+                    # Assess coverage quality
+                    if benefits >= 15:
+                        quality = "Comprehensive"
+                    elif benefits >= 10:
+                        quality = "Standard"
+                    else:
+                        quality = "Basic"
+                    
+                    name_para = Paragraph(str(name), self.styles['CustomBodyText'])
+                    coverage_data.append([
+                        name_para,
+                        f"{coverage:,.0f}" if coverage > 0 else "N/A",
+                        str(benefits) if benefits > 0 else "0",
+                        quality
+                    ])
+            
+            if len(coverage_data) > 1:
+                available_width = self.page_width - 1.5*inch
+                coverage_table = Table(coverage_data, colWidths=[
+                    available_width * 0.35,
+                    available_width * 0.25,
+                    available_width * 0.2,
+                    available_width * 0.2
+                ])
+                coverage_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), HexColor('#4A7C2A')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+                    ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('WORDWRAP', (0, 0), (-1, -1), True),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 9),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('TOPPADDING', (0, 0), (-1, -1), 8),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#F5F5F5')]),
+                ]))
+                story.append(coverage_table)
+                story.append(Spacer(1, 0.1*inch))
+                
+                # Technical Recommendation for Coverage
+                tech_rec_style = ParagraphStyle('TechRec', parent=self.styles['CustomBodyText'], 
+                                               fontSize=9, textColor=HexColor('#2D5016'), 
+                                               leftIndent=0.2*inch, spaceAfter=6)
+                story.append(Paragraph("<b>✓ Technical Recommendation:</b> Select providers with 'Comprehensive' coverage quality. "
+                                     "Verify coverage limits align with asset values. Request schedule of properties if needed.",
+                                     tech_rec_style))
+                story.append(Spacer(1, 0.15*inch))
+        
+        # 2. Risk Assessment
+        story.append(Paragraph("2. Risk Assessment & Exclusions", self.styles['SubsectionHeading']))
+        story.append(Spacer(1, 0.1*inch))
+        
+        risk_analysis = """
+        Understanding policy exclusions is critical for risk management. The following analysis 
+        highlights unique exclusions that may impact coverage in specific scenarios.
+        """
+        story.append(Paragraph(risk_analysis, self.styles['CustomBodyText']))
+        story.append(Spacer(1, 0.1*inch))
+        
+        # Get providers with exclusion data
+        providers_data = side_by_side.get("providers", []) if side_by_side else []
+        
+        if providers_data:
+            for provider in providers_data[:3]:  # Top 3 for detailed analysis
+                provider_name = provider.get("name", "Unknown")
+                exclusions = provider.get("exclusions", [])
+                
+                if exclusions:
+                    story.append(Paragraph(f"<b>{provider_name}</b>", self.styles['CompanyName']))
+                    
+                    exclusion_count = 0
+                    for exclusion in exclusions:
+                        exclusion_text = str(exclusion) if isinstance(exclusion, str) else exclusion.get("text", str(exclusion))
+                        if self._is_valid_item_text(exclusion_text):
+                            story.append(Paragraph(f"• {exclusion_text}", self.styles['CustomBodyText']))
+                            exclusion_count += 1
+                    
+                    if exclusion_count == 0:
+                        story.append(Paragraph("• Standard exclusions apply", self.styles['CustomBodyText']))
+                    
+                    story.append(Spacer(1, 0.1*inch))
+        
+        # Technical Recommendation for Risk Assessment
+        tech_rec_style = ParagraphStyle('TechRec', parent=self.styles['CustomBodyText'], 
+                                       fontSize=9, textColor=HexColor('#2D5016'), 
+                                       leftIndent=0.2*inch, spaceAfter=6)
+        story.append(Paragraph("<b>✓ Technical Recommendation:</b> Cross-reference exclusions with operational risks. "
+                             "Engage legal counsel to review cyber, terrorism, and catastrophe exclusions. "
+                             "Consider standalone policies for excluded high-risk areas.",
+                             tech_rec_style))
+        story.append(Spacer(1, 0.15*inch))
+        
+        # 3. Value Optimization
+        story.append(Paragraph("3. Value Optimization Analysis", self.styles['SubsectionHeading']))
+        story.append(Spacer(1, 0.1*inch))
+        
+        if rows:
+            # Calculate value scores (benefits per SAR spent) - use data_table rows
+            value_data = [["Provider", "Premium (SAR)", "Benefits Count", "Value Score"]]
+            
+            for row in rows[:5]:
+                if isinstance(row, dict):
+                    name = row.get("provider_name") or row.get("provider") or row.get("company") or "N/A"
+                    
+                    # Get premium value
+                    premium_val = row.get("premium") or row.get("premium_amount") or 0
+                    premium = float(premium_val) if premium_val else 0
+                    
+                    # Get benefits count
+                    benefits_val = row.get("benefits") or row.get("benefits_count") or 0
+                    if isinstance(benefits_val, list):
+                        benefits = len(benefits_val)
+                    else:
+                        benefits = int(benefits_val) if benefits_val else 0
+                    
+                    # Calculate value score (benefits per 1000 SAR)
+                    value_score = (benefits / premium * 1000) if premium > 0 and benefits > 0 else 0
+                    
+                    name_para = Paragraph(str(name), self.styles['CustomBodyText'])
+                    value_data.append([
+                        name_para,
+                        f"{premium:,.2f}" if premium > 0 else "N/A",
+                        str(benefits) if benefits > 0 else "0",
+                        f"{value_score:.2f}" if value_score > 0 else "0.00"
+                    ])
+            
+            if len(value_data) > 1:
+                available_width = self.page_width - 1.5*inch
+                value_table = Table(value_data, colWidths=[
+                    available_width * 0.35,
+                    available_width * 0.25,
+                    available_width * 0.2,
+                    available_width * 0.2
+                ])
+                value_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), HexColor('#4A7C2A')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+                    ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                    ('WORDWRAP', (0, 0), (-1, -1), True),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 9),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('TOPPADDING', (0, 0), (-1, -1), 8),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#F5F5F5')]),
+                ]))
+                story.append(value_table)
+                
+                story.append(Spacer(1, 0.1*inch))
+                value_note = Paragraph(
+                    "<i>Value Score = Benefits per 1,000 SAR premium. Higher scores indicate better cost-efficiency.</i>",
+                    self.styles['CustomBodyText']
+                )
+                story.append(value_note)
+                story.append(Spacer(1, 0.08*inch))
+                
+                # Technical Recommendation for Value Optimization
+                tech_rec_style = ParagraphStyle('TechRec', parent=self.styles['CustomBodyText'], 
+                                               fontSize=9, textColor=HexColor('#2D5016'), 
+                                               leftIndent=0.2*inch, spaceAfter=6)
+                story.append(Paragraph("<b>✓ Technical Recommendation:</b> Balance value score with coverage quality. "
+                                     "Lowest premium doesn't always mean best value. Negotiate multi-year contracts for premium stability. "
+                                     "Request claims history data from top 3 providers.",
+                                     tech_rec_style))
+                story.append(Spacer(1, 0.15*inch))
+        
+        # 4. Policy Terms & Conditions
+        story.append(Paragraph("4. Policy Terms & Subjectivities", self.styles['SubsectionHeading']))
+        story.append(Spacer(1, 0.1*inch))
+        
+        terms_intro = """
+        Policy subjectivities are conditions that must be met for coverage to apply. 
+        Understanding these terms is essential for ensuring claims are processed successfully.
+        """
+        story.append(Paragraph(terms_intro, self.styles['CustomBodyText']))
+        story.append(Spacer(1, 0.1*inch))
+        
+        if providers_data:
+            for provider in providers_data[:3]:
+                provider_name = provider.get("name", "Unknown")
+                subjectivities = provider.get("subjectivities", [])
+                
+                if subjectivities:
+                    story.append(Paragraph(f"<b>{provider_name}</b>", self.styles['CompanyName']))
+                    
+                    subj_count = 0
+                    for subj in subjectivities[:5]:  # Top 5 subjectivities
+                        subj_text = str(subj) if isinstance(subj, str) else subj.get("text", str(subj))
+                        if self._is_valid_item_text(subj_text):
+                            story.append(Paragraph(f"• {subj_text}", self.styles['CustomBodyText']))
+                            subj_count += 1
+                    
+                    if subj_count == 0:
+                        story.append(Paragraph("• Standard policy terms apply", self.styles['CustomBodyText']))
+                    
+                    story.append(Spacer(1, 0.1*inch))
+        
+        # Technical Recommendation for Policy Terms
+        tech_rec_style = ParagraphStyle('TechRec', parent=self.styles['CustomBodyText'], 
+                                       fontSize=9, textColor=HexColor('#2D5016'), 
+                                       leftIndent=0.2*inch, spaceAfter=6)
+        story.append(Paragraph("<b>✓ Technical Recommendation:</b> Document all subjectivities and assign compliance ownership. "
+                             "Schedule risk surveys within required timeframes. Establish monitoring systems for ongoing warranty compliance. "
+                             "Non-compliance may void coverage - create compliance checklist before binding.",
+                             tech_rec_style))
+        story.append(Spacer(1, 0.15*inch))
         
         return story
     
@@ -1202,8 +1677,8 @@ class PDFGeneratorService:
                         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                         ('FONTSIZE', (0, 0), (-1, 0), 8),
                         ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                        ('TOPPADDING', (0, 0), (-1, -1), 6),
+('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                                                ('TOPPADDING', (0, 0), (-1, -1), 6),
                     ]))
                     story.append(premium_table)
                     story.append(Spacer(1, 0.15*inch))
@@ -1336,13 +1811,24 @@ class PDFGeneratorService:
         # Key Insights
         insights = analytics.get("insights", [])
         if insights:
-            story.append(Paragraph("Key Insights", self.styles['SubsectionHeading']))
-            story.append(Spacer(1, 0.1*inch))
+            # Filter out "Hakim Score integration" or metadata insights
+            filtered_insights = [
+                insight for insight in insights
+                if not any(keyword in str(insight).lower() for keyword in [
+                    'hakim score integration',
+                    'integration: enabled',
+                    'integration enabled'
+                ])
+            ]
             
-            for insight in insights[:5]:  # Limit to 5 insights
-                insight_text = Paragraph(f"• {insight}", self.styles['CustomBodyText'])
-                story.append(insight_text)
-                story.append(Spacer(1, 0.08*inch))
+            if filtered_insights:
+                story.append(Paragraph("Key Insights", self.styles['SubsectionHeading']))
+                story.append(Spacer(1, 0.1*inch))
+                
+                for insight in filtered_insights[:5]:  # Limit to 5 insights
+                    insight_text = Paragraph(f"• {insight}", self.styles['CustomBodyText'])
+                    story.append(insight_text)
+                    story.append(Spacer(1, 0.08*inch))
         
         return story
 
