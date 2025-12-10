@@ -439,15 +439,30 @@ async def compare_insurance_quotes(
                     status_code=500, detail="Database connection not available"
                 )
 
+            # Get company_id for sharing with sub-accounts (optional - won't fail if None)
+            company_id = None
+            try:
+                company_id = await user_subscription_service.get_user_company_id(user_id)
+                if company_id:
+                    logger.info(f"🏢 User belongs to company: {company_id}")
+            except Exception as company_error:
+                # Don't fail if company_id lookup fails - it's optional
+                logger.warning(f"⚠️  Could not get company_id (optional): {company_error}")
+                company_id = None
+
             comparison_mongo_id = await enhanced_mongodb_service.save_comparison_result(
                 comparison_id=comparison_id,
                 comparison_data=response_data,
                 pdf_count=len(individual_pdf_ids),
+                user_id=user_id,
+                company_id=company_id,  # Can be None - completely optional
             )
             logger.info(f"✅ Saved comparison result to MongoDB: {comparison_mongo_id}")
             logger.info(f"   Database: {enhanced_mongodb_service.database.name}")
             logger.info(f"   Collection: comparisons")
             logger.info(f"   Comparison ID: {comparison_id}")
+            logger.info(f"   User ID: {user_id}")
+            logger.info(f"   Company ID: {company_id or 'None (individual account)'}")
         except Exception as mongo_error:
             logger.error(f"❌ MongoDB save failed for comparison: {mongo_error}")
             import traceback
@@ -523,6 +538,113 @@ async def compare_insurance_quotes(
             progress_tracker.mark_error(job_id, str(e))
         except:
             pass
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+# ============================================================================
+# COMPARISON RETRIEVAL ENDPOINT (For Frontend localStorage)
+# ============================================================================
+
+
+@router.get("/comparisons")
+async def get_all_comparisons(
+    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    user_id_query: Optional[str] = Query(None, alias="userId"),
+):
+    """
+    Get all comparison data from database for frontend.
+    Frontend should call this endpoint and store results in localStorage.
+    
+    Returns all comparisons accessible to the user:
+    - Comparisons created by the user
+    - Comparisons shared via company_id (if user belongs to a company)
+    
+    Args:
+        user_id: User MongoDB ObjectId (from header or query)
+    
+    Returns:
+        List of all comparison data (full comparison_data included)
+    """
+    try:
+        # Get user ID from header or query parameter
+        user_id = user_id or user_id_query
+
+        if not user_id:
+            raise HTTPException(
+                status_code=400,
+                detail="User ID is required. Please provide X-User-Id header or userId query parameter.",
+            )
+
+        logger.info(f"📊 Fetching all comparisons for user: {user_id}")
+
+        # Get user's company_id (if they belong to a company) - optional, won't fail if None
+        company_id = None
+        try:
+            company_id = await user_subscription_service.get_user_company_id(user_id)
+            if company_id:
+                logger.info(f"🏢 User belongs to company: {company_id} - will include shared comparisons")
+        except Exception as company_error:
+            # Don't fail if company_id lookup fails - it's optional
+            logger.warning(f"⚠️  Could not get company_id (optional): {company_error}")
+            company_id = None
+
+        # Fetch all comparisons (user's own + company-shared)
+        comparisons = await enhanced_mongodb_service.get_comparisons_by_user(
+            user_id=user_id,
+            company_id=company_id,
+            limit=100,  # Get up to 100 comparisons
+        )
+
+        # Format response - return full comparison_data for localStorage
+        formatted_comparisons = []
+        for comp in comparisons:
+            # Return the full comparison_data that frontend expects
+            comparison_data = comp.get("comparison_data", {})
+            
+            # If comparison_data exists, use it; otherwise reconstruct from stored fields
+            if comparison_data:
+                formatted_comp = comparison_data.copy()
+            else:
+                # Fallback: reconstruct from stored fields
+                formatted_comp = {
+                    "comparison_id": comp.get("comparison_id"),
+                    "status": comp.get("status", "completed"),
+                    "total_quotes": comp.get("total_quotes", 0),
+                    "summary": comp.get("summary", {}),
+                    "key_differences": comp.get("key_differences", {}),
+                    "side_by_side": comp.get("side_by_side", {}),
+                    "data_table": comp.get("data_table", {}),
+                    "analytics": comp.get("analytics", {}),
+                    "provider_cards": comp.get("provider_cards", []),
+                    "extracted_quotes": comp.get("extracted_quotes", []),
+                    "charts": comp.get("charts", []),
+                    "files_processed": comp.get("files_processed", []),
+                    "processing_timestamp": comp.get("processing_timestamp"),
+                }
+            
+            # Add metadata
+            formatted_comp["_id"] = comp.get("id")
+            formatted_comp["created_at"] = comp.get("created_at").isoformat() if comp.get("created_at") else None
+            formatted_comp["user_id"] = comp.get("user_id")
+            formatted_comp["company_id"] = comp.get("company_id")
+            
+            formatted_comparisons.append(formatted_comp)
+
+        logger.info(f"✅ Found {len(formatted_comparisons)} comparisons for user {user_id}")
+
+        return JSONResponse(
+            content={
+                "success": True,
+                "count": len(formatted_comparisons),
+                "comparisons": formatted_comparisons,
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error fetching comparisons: {e}")
+        logger.exception(e)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 

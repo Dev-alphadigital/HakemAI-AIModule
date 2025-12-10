@@ -345,7 +345,8 @@ class EnhancedMongoDBService:
     # =========================================================================
 
     async def save_comparison_result(
-        self, comparison_id: str, comparison_data: Dict[str, Any], pdf_count: int
+        self, comparison_id: str, comparison_data: Dict[str, Any], pdf_count: int,
+        user_id: Optional[str] = None, company_id: Optional[str] = None
     ) -> str:
         """
         Save final comparison result (combining all PDFs).
@@ -355,6 +356,8 @@ class EnhancedMongoDBService:
             comparison_id: Unique comparison ID
             comparison_data: Complete comparison result (ALL data from compare-quotes endpoint)
             pdf_count: Number of PDFs compared
+            user_id: User ID who created the comparison (for access control)
+            company_id: Company ID for sharing comparisons with sub-accounts
 
         Returns:
             MongoDB document ID
@@ -436,6 +439,9 @@ class EnhancedMongoDBService:
                 # Additional fields that might be in comparison_data
                 "job_id": comparison_data.get("job_id"),
                 "usage": comparison_data.get("usage", {}),
+                # ===== USER & COMPANY ACCESS CONTROL =====
+                "user_id": user_id,  # User who created the comparison
+                "company_id": company_id,  # Company ID for sharing with sub-accounts
             }
 
             # Log data sizes for debugging
@@ -714,6 +720,56 @@ class EnhancedMongoDBService:
 
         except Exception as e:
             logger.error(f"❌ Error getting recent comparisons: {e}")
+            raise
+
+    async def get_comparisons_by_user(
+        self, user_id: str, company_id: Optional[str] = None, limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all comparisons accessible to a user.
+        Returns comparisons created by the user OR shared via company_id.
+        Returns FULL comparison_data for frontend to store in localStorage.
+
+        Args:
+            user_id: User ID
+            company_id: Optional company ID (if user belongs to a company)
+            limit: Maximum results (default 100)
+
+        Returns:
+            List of comparison documents with full comparison_data
+        """
+        try:
+            # Build query: user's own comparisons OR company-shared comparisons
+            query_conditions = [{"user_id": user_id}]
+            
+            # If company_id is provided, also include company-shared comparisons
+            if company_id:
+                query_conditions.append({"company_id": company_id})
+            
+            # Use $or if multiple conditions, otherwise use single condition
+            if len(query_conditions) > 1:
+                query = {"$or": query_conditions}
+            else:
+                query = query_conditions[0]
+            
+            cursor = (
+                self.comparisons_collection.find(query)
+                .sort("created_at", -1)
+                .limit(limit)
+            )
+
+            documents = []
+            async for document in cursor:
+                document["id"] = str(document["_id"])
+                del document["_id"]
+                # Return FULL comparison_data for frontend localStorage
+                documents.append(document)
+
+            logger.info(f"📊 Found {len(documents)} comparisons for user {user_id} (company: {company_id})")
+            return documents
+
+        except Exception as e:
+            logger.error(f"❌ Error getting comparisons by user: {e}")
             raise
 
     async def delete_comparison_result(self, comparison_id: str) -> bool:

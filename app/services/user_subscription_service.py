@@ -218,6 +218,17 @@ class UserSubscriptionService:
                 f"✅ Found user: {user.get('username', 'N/A')} ({user.get('email', 'N/A')})"
             )
 
+            # ✅ NEW: Check if user is a sub-user (view-only, cannot generate comparisons)
+            is_sub_user = user.get("isSubUser", False)
+            if is_sub_user:
+                logger.warning(f"🚫 User {user_id} is a sub-user (view-only). Cannot generate comparisons.")
+                return {
+                    "allowed": False,
+                    "reason": "You are a team member with view-only access. Only the main company account can generate comparisons.",
+                    "user": None,
+                    "isSubUser": True,
+                }
+
             # Check account status
             account_status = user.get("accountStatus")
             if account_status != "active":
@@ -404,6 +415,56 @@ class UserSubscriptionService:
 
         except Exception as e:
             logger.error(f"⚠️  Error resetting monthly usage: {e}")
+
+    async def get_user_company_id(self, user_id: str) -> Optional[str]:
+        """
+        Get company ID for a user (if user belongs to a company).
+        Checks common field names: companyId, company_id, company, organizationId, organization_id
+
+        Args:
+            user_id: User MongoDB ObjectId as string
+
+        Returns:
+            Company ID string if found, None otherwise
+        """
+        try:
+            await self.ensure_connected()
+
+            if not ObjectId.is_valid(user_id):
+                return None
+
+            user = await self.users_collection.find_one({"_id": ObjectId(user_id)})
+
+            if not user:
+                return None
+
+            # Check common field names for company ID
+            # Priority: companyId field (new) > company_id > company > organizationId
+            company_id = (
+                user.get("companyId")  # New field for sub-users (direct reference)
+                or user.get("company_id")
+                or user.get("company")
+                or user.get("organizationId")
+                or user.get("organization_id")
+                or user.get("organization")
+            )
+
+            # Convert ObjectId to string if needed
+            if company_id:
+                if hasattr(company_id, "__str__"):
+                    company_id = str(company_id)
+                elif isinstance(company_id, dict) and "$oid" in company_id:
+                    # Handle MongoDB ObjectId serialization format
+                    company_id = company_id["$oid"]
+                elif hasattr(company_id, "id"):
+                    # Handle ObjectId object
+                    company_id = str(company_id.id)
+
+            return company_id if company_id else None
+
+        except Exception as e:
+            logger.error(f"❌ Error getting user company ID: {e}")
+            return None
 
     async def record_comparison(self, user_id: str) -> bool:
         """

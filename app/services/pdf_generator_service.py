@@ -503,7 +503,7 @@ class PDFGeneratorService:
         if recommendation:
             rec_text = f"""
             <b>Recommendation:</b> {recommendation}<br/>
-            <b>Rationale:</b> {recommendation_reasoning[:150] if recommendation_reasoning else 'Best balance of coverage, price, and policy terms.'}...
+            <b>Rationale:</b> {recommendation_reasoning if recommendation_reasoning else 'Best balance of coverage, price, and policy terms.'}
             """
             story.append(Paragraph(rec_text, self.styles['Highlight']))
             story.append(Spacer(1, 0.1*inch))
