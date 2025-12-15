@@ -440,15 +440,22 @@ async def compare_insurance_quotes(
                 )
 
             # Get company_id for sharing with sub-accounts (optional - won't fail if None)
+            # CRITICAL FIX: For main users without a company, use their own user_id as company_id
+            # This allows sub-users (who have companyId pointing to parent's user_id) to find comparisons
             company_id = None
             try:
                 company_id = await user_subscription_service.get_user_company_id(user_id)
                 if company_id:
                     logger.info(f"🏢 User belongs to company: {company_id}")
+                else:
+                    # For main/parent users without a company, use their own user_id as company_id
+                    # This enables sub-users to find their comparisons via companyId match
+                    company_id = user_id
+                    logger.info(f"🏢 Main user - using user_id as company_id for sub-user access: {company_id}")
             except Exception as company_error:
-                # Don't fail if company_id lookup fails - it's optional
-                logger.warning(f"⚠️  Could not get company_id (optional): {company_error}")
-                company_id = None
+                # Don't fail if company_id lookup fails - use user_id as fallback
+                logger.warning(f"⚠️  Could not get company_id, using user_id as fallback: {company_error}")
+                company_id = user_id
 
             comparison_mongo_id = await enhanced_mongodb_service.save_comparison_result(
                 comparison_id=comparison_id,

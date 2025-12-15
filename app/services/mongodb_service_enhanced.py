@@ -35,6 +35,7 @@ class EnhancedMongoDBService:
         # Collections
         self.individual_pdfs_collection = None  # NEW: Individual PDF extractions
         self.comparisons_collection = None  # Final comparison results
+        self.companies_collection = None  # Companies collection (for sub-user lookups)
 
     async def connect(self):
         """Connect to MongoDB and initialize collections"""
@@ -51,6 +52,7 @@ class EnhancedMongoDBService:
             # Initialize collections
             self.individual_pdfs_collection = self.database.individual_pdf_extractions
             self.comparisons_collection = self.database.comparisons
+            self.companies_collection = self.database.companies  # For sub-user company lookups
 
             # Test connection
             await self.client.admin.command("ping")
@@ -730,6 +732,11 @@ class EnhancedMongoDBService:
         Returns comparisons created by the user OR shared via company_id.
         Returns FULL comparison_data for frontend to store in localStorage.
 
+        For sub-users:
+        - company_id is the Company document's _id (not the parent user's ID)
+        - We need to look up the Company to find the parent user (createdBy field)
+        - Then include comparisons created by the parent user
+
         Args:
             user_id: User ID
             company_id: Optional company ID (if user belongs to a company)
@@ -744,13 +751,33 @@ class EnhancedMongoDBService:
             
             # If company_id is provided, also include company-shared comparisons
             if company_id:
+                # Include comparisons where company_id matches
                 query_conditions.append({"company_id": company_id})
+                
+                # CRITICAL FIX: For sub-users, company_id is the Company document's _id
+                # We need to look up the Company to find the parent user (createdBy)
+                # Then include comparisons created by the parent user
+                try:
+                    if ObjectId.is_valid(company_id):
+                        company = await self.companies_collection.find_one({"_id": ObjectId(company_id)})
+                        if company and company.get("createdBy"):
+                            parent_user_id = str(company["createdBy"])
+                            logger.info(f"🔍 Found parent user {parent_user_id} for company {company_id}")
+                            
+                            # Include ALL comparisons created by the parent user
+                            # (covers both old comparisons with company_id=null and new ones)
+                            if parent_user_id != user_id:
+                                query_conditions.append({"user_id": parent_user_id})
+                except Exception as company_lookup_error:
+                    logger.warning(f"⚠️  Could not look up company {company_id}: {company_lookup_error}")
             
             # Use $or if multiple conditions, otherwise use single condition
             if len(query_conditions) > 1:
                 query = {"$or": query_conditions}
             else:
                 query = query_conditions[0]
+            
+            logger.info(f"🔍 Query for comparisons: {query}")
             
             cursor = (
                 self.comparisons_collection.find(query)

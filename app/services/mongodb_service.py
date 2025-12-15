@@ -142,7 +142,7 @@ class EnhancedMongoDBService:
                 
                 # Extracted data
                 "company_name": extracted_data.get("company_name", "Unknown"),
-                "policy_type": extracted_data.get("policy_type", "Unknown"),
+                "policy_type":  extracted_data.get("policy_type", "Unknown"),
                 "premium_amount": extracted_data.get("premium_amount"),
                 "rate": extracted_data.get("rate"),
                 "score": extracted_data.get("score"),
