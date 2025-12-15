@@ -1609,26 +1609,31 @@ Extract as JSON:
 
 Return ONLY valid JSON."""
 
-        response_stage4 = await openai_client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt_stage4},
-                {"role": "user", "content": user_prompt_stage4}
-            ],
-            temperature=0.0,
-            response_format={"type": "json_object"},
-            max_tokens=2048
-        )
+        # PERFORMANCE FIX: Create async task for Stage 4 to run in parallel with Stage 5+6
+        async def run_stage4():
+            try:
+                response = await openai_client.chat.completions.create(
+                    model=settings.OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt_stage4},
+                        {"role": "user", "content": user_prompt_stage4}
+                    ],
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                    max_tokens=2048
+                )
+                data = json.loads(response.choices[0].message.content)
+                logger.info("✅ Stage 4: Subjectivities extracted")
+                return data
+            except Exception as e:
+                logger.warning(f"⚠️ Stage 4: Could not extract subjectivities: {e}")
+                return {}
         
-        try:
-            stage4_data = json.loads(response_stage4.choices[0].message.content)
-            logger.info("✅ Stage 4: Subjectivities extracted")
-        except:
-            stage4_data = {}
-            logger.warning("⚠️ Stage 4: Could not extract subjectivities")
+        # Start Stage 4 task immediately (will run in parallel)
+        stage4_task = asyncio.create_task(run_stage4())
         
         # ====================================================================
-        # STAGE 5: CALCULATIONS & TIER DETECTION
+        # STAGE 5: CALCULATIONS & TIER DETECTION (runs while Stage 4 is in progress)
         # ====================================================================
         
         logger.info(f"🧮 Stage 5: Calculations and tier detection")
@@ -1786,30 +1791,46 @@ Provide analysis as JSON:
 
 Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
 
-        response_stage6 = await openai_client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt_stage6},
-                {"role": "user", "content": user_prompt_stage6}
-            ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
-            max_tokens=2048
-        )
+        # PERFORMANCE FIX: Create async task for Stage 6 to run in parallel with Stage 4
+        async def run_stage6():
+            try:
+                response = await openai_client.chat.completions.create(
+                    model=settings.OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt_stage6},
+                        {"role": "user", "content": user_prompt_stage6}
+                    ],
+                    temperature=0.2,
+                    response_format={"type": "json_object"},
+                    max_tokens=2048
+                )
+                data = json.loads(response.choices[0].message.content)
+                logger.info(f"✅ Stage 6 complete - Score: {data.get('overall_score')}")
+                return data
+            except Exception as e:
+                logger.warning(f"⚠️ Using default analysis: {e}")
+                return {
+                    "overall_score": 75.0,
+                    "score_breakdown": {},
+                    "strengths": ["Comprehensive coverage"],
+                    "weaknesses": ["Standard limitations"],
+                    "value_assessment": "Standard offering",
+                    "recommendation": "Fair"
+                }
         
-        try:
-            analysis = json.loads(response_stage6.choices[0].message.content)
-            logger.info(f"✅ Stage 6 complete - Score: {analysis.get('overall_score')}")
-        except:
-            analysis = {
-                "overall_score": 75.0,
-                "score_breakdown": {},
-                "strengths": ["Comprehensive coverage"],
-                "weaknesses": ["Standard limitations"],
-                "value_assessment": "Standard offering",
-                "recommendation": "Fair"
-            }
-            logger.warning("⚠️ Using default analysis")
+        # Start Stage 6 task
+        stage6_task = asyncio.create_task(run_stage6())
+        
+        # ====================================================================
+        # AWAIT PARALLEL TASKS (Stage 4 + Stage 6)
+        # ====================================================================
+        
+        logger.info(f"⏳ Waiting for parallel API calls (Stage 4 + Stage 6)...")
+        
+        # Wait for both Stage 4 and Stage 6 to complete in parallel
+        stage4_data, analysis = await asyncio.gather(stage4_task, stage6_task)
+        
+        logger.info(f"✅ Parallel stages complete")
         
         # ====================================================================
         # FINAL ASSEMBLY

@@ -264,7 +264,8 @@ app.add_middleware(
         "http://localhost:3000",
         "http://localhost:3001",
         "http://localhost:8080",
-        "*",  # Allow all in development - CHANGE IN PRODUCTION
+        "https://www.hakem.ai",  # Production frontend
+        "https://hakem.ai",  # Production frontend (without www)
     ],
     allow_credentials=True,
     allow_methods=["*"],

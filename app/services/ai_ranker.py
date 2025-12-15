@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import uuid
+import asyncio
 from typing import List, Dict, Any, Set, Tuple, Optional
 from collections import defaultdict
 from datetime import datetime
@@ -1377,15 +1378,19 @@ async def rank_and_compare_quotes(
             'key_disadvantages': quote.weaknesses[:2] if quote.weaknesses else ['Standard terms']
         })
     
-    # AI-Powered Ranking Analysis
-    logger.info("🤖 Performing AI-powered ranking analysis...")
-    try:
-        ai_ranking_analysis = await _get_ai_ranking_analysis(quote_data_for_ai, weighted_scores)
-        ranking_data['ai_analysis'] = ai_ranking_analysis
-        logger.info("✅ AI ranking analysis completed")
-    except Exception as e:
-        logger.warning(f"⚠️ AI ranking analysis failed: {e}")
-        ranking_data['ai_analysis'] = {"enabled": False, "error": str(e)}
+    # PERFORMANCE FIX: Run AI ranking analysis in background task (non-blocking)
+    logger.info("🤖 Starting AI ranking analysis (background task)...")
+    
+    async def run_ai_ranking():
+        try:
+            result = await _get_ai_ranking_analysis(quote_data_for_ai, weighted_scores)
+            logger.info("✅ AI ranking analysis completed")
+            return result
+        except Exception as e:
+            logger.warning(f"⚠️ AI ranking analysis failed: {e}")
+            return {"enabled": False, "error": str(e)}
+    
+    ai_ranking_task = asyncio.create_task(run_ai_ranking())
     
     for item in ranking_data.get('ranking', []):
         rank = item['rank']
@@ -1399,6 +1404,10 @@ async def rank_and_compare_quotes(
         )
     
     logger.info("✅ Weighted ranking with Hakim Score completed")
+    
+    # PERFORMANCE FIX: Wait for AI ranking analysis to complete before building comparison
+    # This runs in parallel with the badge assignment above
+    ranking_data['ai_analysis'] = await ai_ranking_task
     
     logger.info("🔨 Building comprehensive comparison structure...")
     
