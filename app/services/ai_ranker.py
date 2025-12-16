@@ -1375,7 +1375,14 @@ async def rank_and_compare_quotes(
             'annual_cost': _normalize_premium(quote.total_annual_cost),
             'reason': f"Weighted score: {w_score:.2f}/100 (Hakim: {h_score:.1f} - {h_tier})",
             'key_advantages': quote.strengths[:3] if quote.strengths else ['Competitive offering'],
-            'key_disadvantages': quote.weaknesses[:2] if quote.weaknesses else ['Standard terms']
+            'key_disadvantages': quote.weaknesses[:2] if quote.weaknesses else ['Standard terms'],
+            # ✅ FIX: Add ALL benefits, exclusions, warranties to ranking array
+            'benefits': quote.key_benefits or [],  # ALL benefits, no limit
+            'benefits_count': len(quote.key_benefits) if quote.key_benefits else 0,
+            'exclusions': quote.exclusions or [],  # ALL exclusions, no limit
+            'exclusions_count': len(quote.exclusions) if quote.exclusions else 0,
+            'warranties': quote.warranties or [],  # ALL warranties, no limit
+            'warranties_count': len(quote.warranties) if quote.warranties else 0
         })
     
     # PERFORMANCE FIX: Run AI ranking analysis in background task (non-blocking)
@@ -1973,7 +1980,14 @@ def _create_fallback_ranking(quotes: List[ExtractedQuoteData]) -> Dict:
             'annual_cost': _normalize_premium(quote.total_annual_cost),
             'reason': f'Ranked by premium (fallback mode) - Hakim: {hakim_score:.1f} ({hakim_tier})',
             'key_advantages': quote.strengths or ['Competitive pricing'],
-            'key_disadvantages': quote.weaknesses or ['Standard terms']
+            'key_disadvantages': quote.weaknesses or ['Standard terms'],
+            # ✅ FIX: Add ALL benefits, exclusions, warranties to fallback ranking
+            'benefits': quote.key_benefits or [],  # ALL benefits, no limit
+            'benefits_count': len(quote.key_benefits) if quote.key_benefits else 0,
+            'exclusions': quote.exclusions or [],  # ALL exclusions, no limit
+            'exclusions_count': len(quote.exclusions) if quote.exclusions else 0,
+            'warranties': quote.warranties or [],  # ALL warranties, no limit
+            'warranties_count': len(quote.warranties) if quote.warranties else 0
         })
     
     return {
@@ -2009,7 +2023,14 @@ def _create_single_quote_comparison(quote: ExtractedQuoteData, comparison_id: Op
         'annual_cost': annual_cost,
         'reason': f'Only quote provided - Hakim Score: {hakim_score:.1f} ({hakim_tier})',
         'key_advantages': quote.strengths or ['Quote extracted successfully'],
-        'key_disadvantages': ['No comparison available']
+        'key_disadvantages': ['No comparison available'],
+        # ✅ FIX: Add ALL benefits, exclusions, warranties to single quote ranking
+        'benefits': quote.key_benefits or [],  # ALL benefits, no limit
+        'benefits_count': len(quote.key_benefits) if quote.key_benefits else 0,
+        'exclusions': quote.exclusions or [],  # ALL exclusions, no limit
+        'exclusions_count': len(quote.exclusions) if quote.exclusions else 0,
+        'warranties': quote.warranties or [],  # ALL warranties, no limit
+        'warranties_count': len(quote.warranties) if quote.warranties else 0
     }]
     
     # Generate comparison_id if not provided
