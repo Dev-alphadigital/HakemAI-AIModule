@@ -244,12 +244,77 @@ def _normalize_premium(premium_value: Any) -> float:
     return 0.0
 
 
+async def _get_hakim_score_from_db(company_name: str) -> Optional[Tuple[float, str, int]]:
+    """
+    Get Hakim Score from database with intelligent company name matching.
+    Handles variations like "GIG" matching "Gulf Insurance Group (GIG)".
+    Returns: (score, tier, rank) or None if not found
+    """
+    try:
+        from app.services.hakim_score_service import hakim_score_service
+        
+        # Check if service is connected
+        if not hakim_score_service.collection:
+            return None
+        
+        # Use intelligent matching (handles variations, aliases, abbreviations)
+        db_score = await hakim_score_service.get_hakim_score(company_name)
+        
+        if db_score:
+            db_score_value = db_score.get('score', 0.0)
+            # Score of 0.0 is valid (explicitly set by admin to disable)
+            score = db_score_value * 100  # Convert to 0-100 scale
+            tier = db_score.get('tier', 'Standard')
+            rank = db_score.get('rank', 999)
+            logger.debug(f"✅ DB match: {company_name} → {db_score['company_name']} (score: {score:.1f}, tier: {tier})")
+            return score, tier, rank
+        
+        return None
+        
+    except Exception as e:
+        logger.debug(f"⚠️ Could not get Hakim score from DB for {company_name}: {e}")
+        return None
+
+
 def _get_hakim_score(company_name: str, ia_compliant: bool = False) -> Tuple[float, str, int]:
     """
     Get Hakim Score for provider.
+    NEW LOGIC: Checks database first, then falls back to hardcoded values.
     Handles variations in company name format.
     Returns: (score, tier, rank)
+    
+    NOTE: This is a synchronous function, but it uses async DB lookup internally.
+    For production use, prefer async version: _get_hakim_score_async()
     """
+    import asyncio
+    
+    # Try to get from database first (sync wrapper for async call)
+    try:
+        # Check if we're in an async context
+        loop = None
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Try to get from DB (non-blocking if possible)
+        if loop.is_running():
+            # If loop is running, we can't use run_until_complete
+            # Fall back to hardcoded values
+            logger.debug(f"⚠️ Event loop running, using hardcoded Hakim scores for {company_name}")
+        else:
+            db_result = loop.run_until_complete(_get_hakim_score_from_db(company_name))
+            if db_result:
+                score, tier, rank = db_result
+                if ia_compliant:
+                    score += 3
+                logger.debug(f"✅ Got Hakim score from DB: {company_name} = {score:.1f} ({tier})")
+                return score, tier, rank
+    except Exception as e:
+        logger.debug(f"⚠️ DB lookup failed for {company_name}, using hardcoded: {e}")
+    
+    # FALLBACK: Use hardcoded values (original logic)
     # Try exact match first
     hakim_data = HAKIM_SCORE.get(company_name)
     
@@ -265,8 +330,14 @@ def _get_hakim_score(company_name: str, ia_compliant: bool = False) -> Tuple[flo
     
     # Try case-insensitive lookup
     company_lower = company_name.lower().strip()
+    company_normalized = company_lower.replace(' ', '').replace('-', '').replace('.', '').replace('(', '').replace(')', '')
+    
     for key, value in HAKIM_SCORE.items():
-        if key.lower() == company_lower:
+        key_lower = key.lower().strip()
+        key_normalized = key_lower.replace(' ', '').replace('-', '').replace('.', '').replace('(', '').replace(')', '')
+        
+        # Exact match (case-insensitive)
+        if key_lower == company_lower:
             score = value['score'] * 100
             tier = value['tier']
             rank = value.get('rank', 999)
@@ -275,6 +346,57 @@ def _get_hakim_score(company_name: str, ia_compliant: bool = False) -> Tuple[flo
                 score += 3
             
             return score, tier, rank
+        
+        # Normalized match (handles spacing/punctuation differences)
+        if key_normalized == company_normalized:
+            score = value['score'] * 100
+            tier = value['tier']
+            rank = value.get('rank', 999)
+            
+            if ia_compliant:
+                score += 3
+            
+            return score, tier, rank
+        
+        # Check if company name contains key or vice versa
+        if company_lower in key_lower or key_lower in company_lower:
+            if len(company_lower) >= 3 and len(key_lower) >= 3:  # Avoid false positives
+                score = value['score'] * 100
+                tier = value['tier']
+                rank = value.get('rank', 999)
+                
+                if ia_compliant:
+                    score += 3
+                
+                return score, tier, rank
+    
+    # Try abbreviation matching (e.g., "GIG" matches "Gulf Insurance Group")
+    if len(company_name) <= 5 and company_name.isupper():
+        for key, value in HAKIM_SCORE.items():
+            # Extract first letters of words
+            key_words = key.split()
+            key_abbrev = "".join([w[0].upper() for w in key_words if w and w[0].isalpha()])
+            
+            if company_name == key_abbrev:
+                score = value['score'] * 100
+                tier = value['tier']
+                rank = value.get('rank', 999)
+                
+                if ia_compliant:
+                    score += 3
+                
+                return score, tier, rank
+            
+            # Check if abbreviation appears in the key
+            if company_name in key.upper():
+                score = value['score'] * 100
+                tier = value['tier']
+                rank = value.get('rank', 999)
+                
+                if ia_compliant:
+                    score += 3
+                
+                return score, tier, rank
     
     # Try partial match for common variations
     # UCA variations
@@ -291,6 +413,144 @@ def _get_hakim_score(company_name: str, ia_compliant: bool = False) -> Tuple[flo
             return score, tier, rank
     
     # Default score for providers not in Hakim Score
+    score = DEFAULT_HAKIM_SCORE * 100
+    if ia_compliant:
+        score += 3
+    
+    return score, DEFAULT_TIER, 999
+
+
+async def _get_hakim_score_async(company_name: str, ia_compliant: bool = False) -> Tuple[float, str, int]:
+    """
+    Async version of _get_hakim_score.
+    Checks database first, then falls back to hardcoded values.
+    This is the preferred method for async contexts.
+    """
+    # Try database first
+    db_result = await _get_hakim_score_from_db(company_name)
+    if db_result:
+        score, tier, rank = db_result
+        if ia_compliant:
+            score += 3
+        logger.debug(f"✅ Got Hakim score from DB: {company_name} = {score:.1f} ({tier})")
+        return score, tier, rank
+    
+    # Fallback to hardcoded values
+    hakim_data = HAKIM_SCORE.get(company_name)
+    
+    if hakim_data:
+        score = hakim_data['score'] * 100
+        tier = hakim_data['tier']
+        rank = hakim_data.get('rank', 999)
+        
+        if ia_compliant:
+            score += 3
+        
+        return score, tier, rank
+    
+    # Try case-insensitive lookup
+    company_lower = company_name.lower().strip()
+    company_normalized = company_lower.replace(' ', '').replace('-', '').replace('.', '').replace('(', '').replace(')', '')
+    
+    for key, value in HAKIM_SCORE.items():
+        key_lower = key.lower().strip()
+        key_normalized = key_lower.replace(' ', '').replace('-', '').replace('.', '').replace('(', '').replace(')', '')
+        
+        # Exact match (case-insensitive)
+        if key_lower == company_lower:
+            score = value['score'] * 100
+            tier = value['tier']
+            rank = value.get('rank', 999)
+            
+            if ia_compliant:
+                score += 3
+            
+            return score, tier, rank
+        
+        # Normalized match
+        if key_normalized == company_normalized:
+            score = value['score'] * 100
+            tier = value['tier']
+            rank = value.get('rank', 999)
+            
+            if ia_compliant:
+                score += 3
+            
+            return score, tier, rank
+    
+    # Try abbreviation matching
+    if len(company_name) <= 5 and company_name.isupper():
+        for key, value in HAKIM_SCORE.items():
+            key_words = key.split()
+            key_abbrev = "".join([w[0].upper() for w in key_words if w and w[0].isalpha()])
+            
+            if company_name == key_abbrev:
+                score = value['score'] * 100
+                tier = value['tier']
+                rank = value.get('rank', 999)
+                
+                if ia_compliant:
+                    score += 3
+                
+                return score, tier, rank
+    
+    # GIG variations
+    if company_lower == 'gig' or company_normalized == 'gig':
+        gig_data = HAKIM_SCORE.get('Gulf Insurance Group (GIG)') or HAKIM_SCORE.get('GIG')
+        if gig_data:
+            score = gig_data['score'] * 100
+            tier = gig_data['tier']
+            rank = gig_data.get('rank', 999)
+            
+            if ia_compliant:
+                score += 3
+            
+            return score, tier, rank
+    
+    # Try fuzzy matching with similarity threshold
+    from difflib import SequenceMatcher
+    
+    def normalize_for_match(name: str) -> str:
+        """Normalize name for matching"""
+        return name.lower().replace(' ', '').replace('-', '').replace('.', '').replace('(', '').replace(')', '')
+    
+    company_norm = normalize_for_match(company_name)
+    best_match = None
+    best_similarity = 0.0
+    
+    for key, value in HAKIM_SCORE.items():
+        key_norm = normalize_for_match(key)
+        similarity = SequenceMatcher(None, company_norm, key_norm).ratio()
+        
+        if similarity > best_similarity and similarity >= 0.7:  # 70% similarity threshold
+            best_similarity = similarity
+            best_match = value
+    
+    if best_match:
+        score = best_match['score'] * 100
+        tier = best_match['tier']
+        rank = best_match.get('rank', 999)
+        
+        if ia_compliant:
+            score += 3
+        
+        logger.debug(f"✅ Fuzzy match: {company_name} (similarity: {best_similarity:.2f})")
+        return score, tier, rank
+    
+    # Try partial match for common variations
+    if 'uca' in company_lower or 'united cooperative' in company_lower:
+        uca_data = HAKIM_SCORE.get('United Cooperative Assurance (UCA)') or HAKIM_SCORE.get('UCA')
+        if uca_data:
+            score = uca_data['score'] * 100
+            tier = uca_data['tier']
+            rank = uca_data.get('rank', 999)
+            
+            if ia_compliant:
+                score += 3
+            
+            return score, tier, rank
+    
+    # Default score
     score = DEFAULT_HAKIM_SCORE * 100
     if ia_compliant:
         score += 3
@@ -483,6 +743,7 @@ def _calculate_weighted_score(
     
     # STEP 4: Hakim Score contribution (30% weight - MANDATORY)
     # This is 30% of total - ensures companies with better reputation and financial stability rank higher
+    # NOTE: This function is sync, so we use sync version (which tries DB first, then falls back)
     hakim_score, hakim_tier, hakim_rank = _get_hakim_score(quote.company_name, ia_compliant)
     # Hakim Score is already 0-100, so we use it directly
     reputation_score = hakim_score  # Already normalized to 0-100
@@ -1292,7 +1553,8 @@ async def rank_and_compare_quotes(
         client_name = getattr(quote, 'client_name', None) or getattr(quote, 'insured_name', 'Not specified')
         ia_compliant = getattr(quote, 'ia_compliant', False)
         
-        hakim_score, hakim_tier, hakim_rank = _get_hakim_score(quote.company_name, ia_compliant)
+        # Use async version for better DB integration
+        hakim_score, hakim_tier, hakim_rank = await _get_hakim_score_async(quote.company_name, ia_compliant)
         
         logger.info(f"📊 {quote.company_name}: Hakim Score={hakim_score:.1f} ({hakim_tier}), Weighted Score={weighted_score:.2f}")
         
@@ -1581,7 +1843,7 @@ async def _build_comprehensive_comparison(
     for quote in quotes:
         client_name = getattr(quote, 'client_name', None) or getattr(quote, 'insured_name', 'Not specified')
         ia_compliant = getattr(quote, 'ia_compliant', False)
-        hakim_score, hakim_tier, hakim_rank = _get_hakim_score(quote.company_name, ia_compliant)
+        hakim_score, hakim_tier, hakim_rank = await _get_hakim_score_async(quote.company_name, ia_compliant)
         
         # Get extended data
         extended = _get_extended_data(quote)
@@ -1667,6 +1929,7 @@ async def _build_comprehensive_comparison(
         "hakim_score": [
             {
                 "provider": quote.company_name,
+                # Note: This is in a sync context, so we use sync version
                 "score": _get_hakim_score(quote.company_name, getattr(quote, 'ia_compliant', False))[0],
                 "tier": _get_hakim_score(quote.company_name, getattr(quote, 'ia_compliant', False))[1],
                 "rank": _get_hakim_score(quote.company_name, getattr(quote, 'ia_compliant', False))[2]

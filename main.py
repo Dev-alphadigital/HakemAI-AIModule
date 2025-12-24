@@ -101,6 +101,15 @@ async def lifespan(app: FastAPI):
         logger.error(f"  ❌ User Documents Service connection failed: {e}")
         logger.warning("  ⚠️  Application will continue without user documents storage")
     
+    # Initialize Hakim Score Service (connects to same MongoDB)
+    try:
+        from app.services.hakim_score_service import hakim_score_service
+        await hakim_score_service.connect()
+        logger.info("  ✅ Hakim Score Service connected")
+    except Exception as e:
+        logger.error(f"  ❌ Hakim Score Service connection failed: {e}")
+        logger.warning("  ⚠️  Application will continue without Hakim Score management")
+    
     # Start progress tracker cleanup task
     try:
         asyncio.create_task(start_cleanup_task())
@@ -214,6 +223,14 @@ async def lifespan(app: FastAPI):
         logger.info("  ✅ User Documents Service connection closed")
     except Exception as e:
         logger.warning(f"  ⚠️  User Documents Service disconnect: {str(e)}")
+    
+    # Disconnect Hakim Score Service
+    try:
+        from app.services.hakim_score_service import hakim_score_service
+        await hakim_score_service.disconnect()
+        logger.info("  ✅ Hakim Score Service connection closed")
+    except Exception as e:
+        logger.warning(f"  ⚠️  Hakim Score Service disconnect: {str(e)}")
     
     # Cleanup temporary files
     try:
