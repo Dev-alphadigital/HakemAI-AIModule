@@ -1316,6 +1316,84 @@ class HakimScoreBulkUpdateRequest(BaseModel):
     updates: List[BulkScoreUpdateItem] = Field(..., description="List of score updates")
 
 
+@router.post("/admin/hakim-scores/initialize")
+async def initialize_hakim_scores():
+    """
+    Initialize Hakim scores from HAKIM_SCORE dictionary in ai_ranker.py.
+    This endpoint allows admins to populate the database with default scores.
+    Only needs to be run once when setting up a new database.
+    
+    Returns:
+        Summary of initialization (created, updated, failed counts)
+    """
+    try:
+        logger.info("🔄 Initializing Hakim scores from HAKIM_SCORE dictionary...")
+        
+        # Import HAKIM_SCORE from ai_ranker
+        from app.services.ai_ranker import HAKIM_SCORE
+        
+        # Extract unique companies
+        companies_by_rank = {}
+        for company_name, data in HAKIM_SCORE.items():
+            rank = data.get('rank', 999)
+            score = data.get('score', 0.75)
+            tier = data.get('tier', 'Standard')
+            
+            if rank not in companies_by_rank:
+                companies_by_rank[rank] = {
+                    'names': [],
+                    'score': score,
+                    'tier': tier,
+                    'rank': rank
+                }
+            companies_by_rank[rank]['names'].append(company_name)
+        
+        # Create unique companies list
+        scores_data = []
+        for rank in sorted(companies_by_rank.keys()):
+            company_data = companies_by_rank[rank]
+            names = company_data['names']
+            
+            # Prefer English names over Arabic
+            english_names = [n for n in names if not any('\u0600' <= c <= '\u06FF' for c in n)]
+            if english_names:
+                candidates = [n for n in english_names if len(n) > 3]
+                main_name = max(candidates, key=len) if candidates else max(english_names, key=len)
+            else:
+                main_name = max(names, key=len)
+            
+            aliases = [name for name in names if name != main_name]
+            
+            scores_data.append({
+                'company_name': main_name,
+                'score': company_data['score'],
+                'tier': company_data['tier'],
+                'rank': company_data['rank'],
+                'aliases': aliases
+            })
+        
+        # Bulk create/update
+        logger.info(f"💾 Saving {len(scores_data)} companies to database...")
+        result = await hakim_score_service.bulk_create_or_update(scores_data)
+        
+        logger.info(f"✅ Initialization complete: Created={result['created']}, Updated={result['updated']}")
+        
+        return JSONResponse(content={
+            "success": True,
+            "message": f"Initialized {result['created'] + result['updated']} companies",
+            "created": result['created'],
+            "updated": result['updated'],
+            "failed": result['failed'],
+            "total": result['total']
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Error initializing Hakim scores: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to initialize Hakim scores: {str(e)}")
+
+
 @router.get("/admin/hakim-scores")
 async def get_all_hakim_scores(
     sort_by: Optional[str] = Query("company_name", description="Sort field: rank, company_name, score, tier"),
