@@ -19,6 +19,7 @@ from app.services.mongodb_service_enhanced import enhanced_mongodb_service
 from app.services.progress_tracker import start_cleanup_task
 from app.services.user_subscription_service import user_subscription_service
 from app.services.user_documents_service import user_documents_service
+from app.services.activity_logs_service import activity_logs_service
 
 
 # ============================================================================
@@ -109,6 +110,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"  ❌ Hakim Score Service connection failed: {e}")
         logger.warning("  ⚠️  Application will continue without Hakim Score management")
+    
+    # Initialize Activity Logs Service (connects to same MongoDB)
+    try:
+        await activity_logs_service.connect()
+        logger.info("  ✅ Activity Logs Service connected")
+    except Exception as e:
+        logger.error(f"  ❌ Activity Logs Service connection failed: {e}")
+        logger.warning("  ⚠️  Application will continue without Activity Logs tracking")
     
     # Start progress tracker cleanup task
     try:
@@ -232,6 +241,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"  ⚠️  Hakim Score Service disconnect: {str(e)}")
     
+    # Disconnect Activity Logs Service
+    try:
+        await activity_logs_service.disconnect()
+        logger.info("  ✅ Activity Logs Service connection closed")
+    except Exception as e:
+        logger.warning(f"  ⚠️  Activity Logs Service disconnect: {str(e)}")
+    
     # Cleanup temporary files
     try:
         cleanup_count = 0
@@ -275,19 +291,20 @@ app = FastAPI(
 # MIDDLEWARE CONFIGURATION
 # ============================================================================
 
+# Get CORS origins from environment variable or use defaults
+cors_origins = os.getenv("ALLOWED_ORIGINS", 
+    "http://localhost:3000,http://localhost:3001,http://localhost:8080,https://www.hakem.ai,https://hakem.ai"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://localhost:8080",
-        "https://www.hakem.ai",  # Production frontend
-        "https://hakem.ai",  # Production frontend (without www)
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger.info(f"🔒 CORS enabled for origins: {cors_origins}")
 
 
 @app.middleware("http")

@@ -24,9 +24,11 @@ from typing import List, Dict, Any, Optional
 import logging
 import os
 import uuid
+import zipfile
 from datetime import datetime
 from pathlib import Path
 import asyncio
+from io import BytesIO
 
 from app.core.config import settings
 from app.services.pdf_extractor import pdf_extractor
@@ -46,6 +48,9 @@ from app.services.user_documents_service import user_documents_service
 
 # Import PDF Generator Service
 from app.services.pdf_generator_service import pdf_generator_service
+
+# Import Activity Logs Service
+from app.services.activity_logs_service import activity_logs_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["Insurance Quotes"])
@@ -533,6 +538,23 @@ async def compare_insurance_quotes(
             "quotesUsed": len(files),
         }
 
+        # Log activity for comparison creation
+        try:
+            if user_id:
+                await activity_logs_service.create_activity_log(
+                    user_id=user_id,
+                    activity_type="comparison_created",
+                    description=f"Created comparison with {len(files)} quotes",
+                    metadata={
+                        "comparison_id": comparison_id,
+                        "num_quotes": len(files),
+                        "providers": [q.get("insurer_name", "Unknown") for q in extracted_quotes]
+                    }
+                )
+                logger.info(f"✅ Activity logged: comparison_created for user {user_id}")
+        except Exception as log_err:
+            logger.warning(f"⚠️  Failed to log activity: {log_err}")
+
         return JSONResponse(content=response_data)
 
     except HTTPException:
@@ -767,18 +789,238 @@ async def download_user_document(
 # PDF REPORT GENERATION ENDPOINT
 # ============================================================================
 
-
 @router.get("/comparison/{comparison_id}/pdf")
-async def download_comparison_pdf(
+async def download_comparison_pdfs(
+    comparison_id: str,
+    report_type: Optional[str] = Query("both", description="Type of report: 'strategic-memo', 'detailed-comparison', or 'both'"),
+    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    user_id_query: Optional[str] = Query(None, alias="userId"),
+):
+    """
+    Generate and download PDF reports for a comparison.
+    
+    By default, returns strategic memo. Use report_type query parameter to specify:
+    - 'strategic-memo': 1-page strategic memo only
+    - 'detailed-comparison': Detailed comparison report only
+    - 'both': Returns JSON with download URLs for both (frontend handles downloads)
+
+    Args:
+        comparison_id: Comparison ID from compare-quotes response
+        report_type: Type of report to download (default: 'both')
+        user_id: User MongoDB ObjectId (optional, for validation)
+
+    Returns:
+        PDF file(s) or JSON with download URLs
+    """
+    try:
+        logger.info(f"📄 Generating PDF for comparison: {comparison_id}, type: {report_type}")
+
+        # Fetch comparison data
+        comparison_data = await enhanced_mongodb_service.get_comparison_result(
+            comparison_id
+        )
+
+        if not comparison_data:
+            raise HTTPException(
+                status_code=404, detail=f"Comparison not found: {comparison_id}"
+            )
+
+        # Extract comparison data
+        comp_data = comparison_data.get("comparison_data", {})
+
+        if not comp_data:
+            comp_data = {
+                "comparison_id": comparison_id,
+                "total_quotes": comparison_data.get("total_pdfs", 0),
+                "summary": comparison_data.get("summary", {}),
+                "key_differences": comparison_data.get("key_differences", {}),
+                "side_by_side": comparison_data.get("side_by_side", {}),
+                "data_table": comparison_data.get("data_table", {}),
+                "analytics": comparison_data.get("analytics", {}),
+                "provider_cards": comparison_data.get("provider_cards", []),
+            }
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # If both reports requested, generate both PDFs and return JSON with base64 data
+        if report_type == "both":
+            # Generate both PDFs
+            strategic_memo_buffer = pdf_generator_service.generate_strategic_memo_pdf(
+                comparison_data=comp_data, comparison_id=comparison_id
+            )
+            detailed_comparison_buffer = pdf_generator_service.generate_detailed_comparison_pdf(
+                comparison_data=comp_data, comparison_id=comparison_id
+            )
+            
+            strategic_memo_bytes = strategic_memo_buffer.getvalue()
+            detailed_comparison_bytes = detailed_comparison_buffer.getvalue()
+            
+            strategic_filename = f"Strategic_Memo_{comparison_id}_{timestamp}.pdf"
+            detailed_filename = f"HAKEM_AI_Detailed_Technical_Comparison_{comparison_id}_{timestamp}.pdf"
+            
+            # Convert to base64 for JSON response
+            import base64
+            strategic_b64 = base64.b64encode(strategic_memo_bytes).decode('utf-8')
+            detailed_b64 = base64.b64encode(detailed_comparison_bytes).decode('utf-8')
+            
+            logger.info(f"✅ Both PDFs generated: {strategic_filename} ({len(strategic_memo_bytes)} bytes), {detailed_filename} ({len(detailed_comparison_bytes)} bytes)")
+            
+            # Return JSON with both PDFs
+            return JSONResponse(content={
+                "success": True,
+                "comparison_id": comparison_id,
+                "reports": {
+                    "strategic_memo": {
+                        "filename": strategic_filename,
+                        "data": strategic_b64,
+                        "size": len(strategic_memo_bytes)
+                    },
+                    "detailed_comparison": {
+                        "filename": detailed_filename,
+                        "data": detailed_b64,
+                        "size": len(detailed_comparison_bytes)
+                    }
+                },
+                "message": "Both reports generated successfully"
+            })
+
+        # Generate the requested PDF
+        if report_type == "strategic-memo":
+            pdf_buffer = pdf_generator_service.generate_strategic_memo_pdf(
+                comparison_data=comp_data, comparison_id=comparison_id
+            )
+            filename = f"Strategic_Memo_{comparison_id}_{timestamp}.pdf"
+        elif report_type == "detailed-comparison":
+            pdf_buffer = pdf_generator_service.generate_detailed_comparison_pdf(
+                comparison_data=comp_data, comparison_id=comparison_id
+            )
+            filename = f"HAKEM_AI_Detailed_Technical_Comparison_{comparison_id}_{timestamp}.pdf"
+        else:
+            # Default: strategic memo
+            pdf_buffer = pdf_generator_service.generate_strategic_memo_pdf(
+                comparison_data=comp_data, comparison_id=comparison_id
+            )
+            filename = f"Strategic_Memo_{comparison_id}_{timestamp}.pdf"
+
+        # Get PDF bytes
+        pdf_bytes = pdf_buffer.getvalue()
+
+        logger.info(f"✅ PDF generated: {filename} ({len(pdf_bytes)} bytes)")
+
+        # Return PDF with proper headers for download
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(pdf_bytes)),
+                "Content-Type": "application/pdf",
+                "Access-Control-Expose-Headers": "Content-Disposition, Content-Length",
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error generating PDF: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+
+
+@router.get("/comparison/{comparison_id}/pdf/strategic-memo")
+async def download_strategic_memo_pdf(
     comparison_id: str,
     user_id: Optional[str] = Header(None, alias="X-User-Id"),
     user_id_query: Optional[str] = Query(None, alias="userId"),
 ):
     """
-    Generate and download comprehensive PDF report for a comparison.
+    Generate and download 1-page Strategic Memo PDF report.
+    
+    This is a high-level executive brief optimized for decision makers.
 
-    Includes all sections:
-    - Executive Summary
+    Args:
+        comparison_id: Comparison ID from compare-quotes response
+        user_id: User MongoDB ObjectId (optional, for validation)
+
+    Returns:
+        PDF file as download (Strategic Memo)
+    """
+    try:
+        logger.info(f"📄 Generating Strategic Memo PDF for comparison: {comparison_id}")
+
+        # Fetch comparison data
+        comparison_data = await enhanced_mongodb_service.get_comparison_result(
+            comparison_id
+        )
+
+        if not comparison_data:
+            raise HTTPException(
+                status_code=404, detail=f"Comparison not found: {comparison_id}"
+            )
+
+        # Extract comparison data
+        comp_data = comparison_data.get("comparison_data", {})
+
+        if not comp_data:
+            comp_data = {
+                "comparison_id": comparison_id,
+                "total_quotes": comparison_data.get("total_pdfs", 0),
+                "summary": comparison_data.get("summary", {}),
+                "key_differences": comparison_data.get("key_differences", {}),
+                "side_by_side": comparison_data.get("side_by_side", {}),
+                "data_table": comparison_data.get("data_table", {}),
+                "analytics": comparison_data.get("analytics", {}),
+                "provider_cards": comparison_data.get("provider_cards", []),
+            }
+
+        # Generate Strategic Memo PDF
+        pdf_buffer = pdf_generator_service.generate_strategic_memo_pdf(
+            comparison_data=comp_data, comparison_id=comparison_id
+        )
+
+        # Get PDF bytes
+        pdf_bytes = pdf_buffer.getvalue()
+
+        # Generate filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"Strategic_Memo_{comparison_id}_{timestamp}.pdf"
+
+        logger.info(
+            f"✅ Strategic Memo PDF generated: {filename} ({len(pdf_bytes)} bytes)"
+        )
+
+        # Return PDF as download with proper headers
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "Content-Length": str(len(pdf_bytes)),
+                "Content-Type": "application/pdf",
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error generating Strategic Memo PDF: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to generate Strategic Memo PDF: {str(e)}")
+
+
+@router.get("/comparison/{comparison_id}/pdf/detailed-comparison")
+async def download_detailed_comparison_pdf(
+    comparison_id: str,
+    user_id: Optional[str] = Header(None, alias="X-User-Id"),
+    user_id_query: Optional[str] = Query(None, alias="userId"),
+):
+    """
+    Generate and download Detailed Comparison PDF report.
+    
+    This is a comprehensive technical report with all sections:
+    - Detailed Technical Analysis
     - Key Differences
     - Data Table
     - Side-by-Side Comparison
@@ -789,40 +1031,39 @@ async def download_comparison_pdf(
         user_id: User MongoDB ObjectId (optional, for validation)
 
     Returns:
-        PDF file as download
+        PDF file as download (Detailed Comparison)
     """
     try:
-        logger.info(f"📄 Generating PDF for comparison: {comparison_id}")
+        logger.info(f"📄 Generating Detailed Comparison PDF for comparison: {comparison_id}")
 
-        # Fetch comparison data from MongoDB
-        comparison_doc = await enhanced_mongodb_service.get_comparison_result(
+        # Fetch comparison data
+        comparison_data = await enhanced_mongodb_service.get_comparison_result(
             comparison_id
         )
 
-        if not comparison_doc:
+        if not comparison_data:
             raise HTTPException(
                 status_code=404, detail=f"Comparison not found: {comparison_id}"
             )
 
         # Extract comparison data
-        comparison_data = comparison_doc.get("comparison_data", {})
+        comp_data = comparison_data.get("comparison_data", {})
 
-        # If comparison_data is empty, try to reconstruct from document fields
-        if not comparison_data:
-            comparison_data = {
+        if not comp_data:
+            comp_data = {
                 "comparison_id": comparison_id,
-                "total_quotes": comparison_doc.get("total_pdfs", 0),
-                "summary": comparison_doc.get("summary", {}),
-                "key_differences": comparison_doc.get("key_differences", {}),
-                "side_by_side": comparison_doc.get("side_by_side", {}),
-                "data_table": comparison_doc.get("data_table", {}),
-                "analytics": comparison_doc.get("analytics", {}),
-                "provider_cards": comparison_doc.get("provider_cards", []),
+                "total_quotes": comparison_data.get("total_pdfs", 0),
+                "summary": comparison_data.get("summary", {}),
+                "key_differences": comparison_data.get("key_differences", {}),
+                "side_by_side": comparison_data.get("side_by_side", {}),
+                "data_table": comparison_data.get("data_table", {}),
+                "analytics": comparison_data.get("analytics", {}),
+                "provider_cards": comparison_data.get("provider_cards", []),
             }
 
-        # Generate PDF
-        pdf_buffer = pdf_generator_service.generate_comparison_pdf(
-            comparison_data=comparison_data, comparison_id=comparison_id
+        # Generate Detailed Comparison PDF
+        pdf_buffer = pdf_generator_service.generate_detailed_comparison_pdf(
+            comparison_data=comp_data, comparison_id=comparison_id
         )
 
         # Get PDF bytes
@@ -830,30 +1071,30 @@ async def download_comparison_pdf(
 
         # Generate filename
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"HAKEM_AI_Comparison_{comparison_id}_{timestamp}.pdf"
+        filename = f"HAKEM_AI_Detailed_Technical_Comparison_{comparison_id}_{timestamp}.pdf"
 
         logger.info(
-            f"✅ PDF generated successfully: {filename} ({len(pdf_bytes)} bytes)"
+            f"✅ Detailed Comparison PDF generated: {filename} ({len(pdf_bytes)} bytes)"
         )
 
-        # Return PDF as download
+        # Return PDF as download with proper headers
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Disposition": f'inline; filename="{filename}"',
                 "Content-Length": str(len(pdf_bytes)),
+                "Content-Type": "application/pdf",
             },
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error generating PDF: {e}")
+        logger.error(f"❌ Error generating Detailed Comparison PDF: {e}")
         import traceback
-
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate Detailed Comparison PDF: {str(e)}")
 
 
 @router.delete("/my-documents/{document_id}")
@@ -1455,6 +1696,285 @@ async def search_hakim_scores(query: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# ACTIVITY LOGS ENDPOINTS (Public - for user actions)
+# ============================================================================
+
+from pydantic import BaseModel
+
+class ActivityLogCreate(BaseModel):
+    """Request model for creating activity logs"""
+    userId: str
+    activityType: str
+    description: str
+    userEmail: Optional[str] = None
+    username: Optional[str] = None
+    ipAddress: Optional[str] = None
+    userAgent: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+@router.post("/activity-logs/create")
+async def create_activity_log(log_data: ActivityLogCreate):
+    """
+    Create a new activity log entry (Public endpoint for user actions).
+    
+    Request Body:
+        userId: User ID (required)
+        activityType: Type of activity (e.g., login, logout, comparison_created)
+        description: Description of the activity
+        userEmail: User email (optional)
+        username: Username (optional)
+        ipAddress: IP address (optional)
+        userAgent: User agent (optional)
+        metadata: Additional metadata (optional)
+    
+    Returns:
+        Success message with log ID
+    """
+    try:
+        logger.info(f"📝 Creating activity log: {log_data.activityType} for user {log_data.userId}")
+        
+        log_id = await activity_logs_service.create_activity_log(
+            user_id=log_data.userId,
+            activity_type=log_data.activityType,
+            description=log_data.description,
+            user_email=log_data.userEmail,
+            username=log_data.username,
+            ip_address=log_data.ipAddress,
+            user_agent=log_data.userAgent,
+            metadata=log_data.metadata
+        )
+        
+        logger.info(f"✅ Activity log created: {log_id}")
+        
+        return JSONResponse(content={
+            "success": True,
+            "message": "Activity logged successfully",
+            "logId": log_id
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Error creating activity log: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        # Don't fail the request if logging fails
+        return JSONResponse(content={
+            "success": False,
+            "message": "Failed to log activity",
+            "error": str(e)
+        }, status_code=200)  # Return 200 so it doesn't break user flow
+
+
+# ============================================================================
+# ADMIN ACTIVITY LOGS ENDPOINTS
+# ============================================================================
+
+@router.get("/admin/activity-logs")
+async def get_activity_logs(
+    page: Optional[int] = Query(1, ge=1, description="Page number"),
+    limit: Optional[int] = Query(50, ge=1, le=100, description="Number of logs per page"),
+    userId: Optional[str] = Query(None, alias="userId", description="Filter by user ID"),
+    activityType: Optional[str] = Query(None, alias="activityType", description="Filter by activity type"),
+    startDate: Optional[str] = Query(None, alias="startDate", description="Start date filter (ISO format)"),
+    endDate: Optional[str] = Query(None, alias="endDate", description="End date filter (ISO format)"),
+    search: Optional[str] = Query(None, description="Search in username, email, description"),
+):
+    """
+    Get activity logs with filtering and pagination (Admin endpoint).
+    
+    Query Parameters:
+        page: Page number (default: 1)
+        limit: Number of logs per page (default: 50, max: 100)
+        userId: Filter by user ID (optional)
+        activityType: Filter by activity type (optional, use "All Types" for no filter)
+        startDate: Start date filter in ISO format (optional)
+        endDate: End date filter in ISO format (optional)
+        search: Search query for username, email, or description (optional)
+    
+    Returns:
+        Activity logs with pagination metadata
+    """
+    try:
+        # Ensure defaults are set
+        page_num = page if page is not None else 1
+        limit_num = limit if limit is not None else 50
+        
+        logger.info(f"📊 Fetching activity logs: page={page_num}, limit={limit_num}, userId={userId}, activityType={activityType}")
+        
+        # Ensure activity logs service is connected
+        if activity_logs_service.activity_logs_collection is None:
+            logger.warning("⚠️  Activity logs collection not initialized, attempting to connect...")
+            try:
+                await activity_logs_service.connect()
+                logger.info("✅ Activity logs service connected successfully")
+            except Exception as connect_error:
+                logger.error(f"❌ Failed to connect activity logs service: {connect_error}")
+                # Return empty result instead of failing
+                return JSONResponse(content={
+                    "logs": [],
+                    "total": 0,
+                    "page": page_num,
+                    "totalPages": 1
+                })
+        else:
+            logger.info("✅ Activity logs service already connected")
+        
+        # Parse dates if provided
+        start_date = None
+        end_date = None
+        if startDate:
+            try:
+                start_date = datetime.fromisoformat(startDate.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid startDate format. Use ISO format.")
+        if endDate:
+            try:
+                end_date = datetime.fromisoformat(endDate.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid endDate format. Use ISO format.")
+        
+        logger.info(f"🔍 Calling activity_logs_service.get_activity_logs...")
+        result = await activity_logs_service.get_activity_logs(
+            page=page_num,
+            limit=limit_num,
+            user_id=userId,
+            activity_type=activityType,
+            start_date=start_date,
+            end_date=end_date,
+            search=search
+        )
+        
+        logger.info(f"✅ Retrieved {len(result.get('logs', []))} logs (total: {result.get('total', 0)})")
+        return JSONResponse(content=result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting activity logs: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        # Return empty result instead of failing completely to prevent frontend errors
+        return JSONResponse(content={
+            "logs": [],
+            "total": 0,
+            "page": page_num if 'page_num' in locals() else 1,
+            "totalPages": 1,
+            "error": f"Failed to retrieve activity logs: {str(e)}"
+        }, status_code=200)  # Return 200 with empty data instead of 500
+
+
+@router.get("/admin/users/{userId}/activity-logs")
+async def get_user_activity_logs(
+    userId: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(50, ge=1, le=100, description="Number of logs per page"),
+):
+    """
+    Get activity logs for a specific user (Admin endpoint).
+    
+    Args:
+        userId: User ID
+        page: Page number (default: 1)
+        limit: Number of logs per page (default: 50, max: 100)
+    
+    Returns:
+        Activity logs for the user with pagination metadata
+    """
+    try:
+        result = await activity_logs_service.get_user_activity_logs(
+            user_id=userId,
+            page=page,
+            limit=limit
+        )
+        
+        return JSONResponse(content=result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting user activity logs: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to get user activity logs: {str(e)}")
+
+
+@router.get("/admin/activity-logs/statistics")
+async def get_activity_statistics(
+    startDate: Optional[str] = Query(None, alias="startDate", description="Start date filter (ISO format)"),
+    endDate: Optional[str] = Query(None, alias="endDate", description="End date filter (ISO format)"),
+):
+    """
+    Get activity statistics (Admin endpoint).
+    
+    Query Parameters:
+        startDate: Start date filter in ISO format (optional)
+        endDate: End date filter in ISO format (optional)
+    
+    Returns:
+        Activity statistics including:
+        - totalActivities
+        - activitiesByType
+        - topUsers
+        - activitiesByDay
+    """
+    try:
+        # Parse dates if provided
+        start_date = None
+        end_date = None
+        if startDate:
+            try:
+                start_date = datetime.fromisoformat(startDate.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid startDate format. Use ISO format.")
+        if endDate:
+            try:
+                end_date = datetime.fromisoformat(endDate.replace('Z', '+00:00'))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid endDate format. Use ISO format.")
+        
+        result = await activity_logs_service.get_activity_statistics(
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        return JSONResponse(content=result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting activity statistics: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to get activity statistics: {str(e)}")
+
+
+@router.get("/admin/activity-logs/recent")
+async def get_recent_activity_logs(
+    limit: int = Query(10, ge=1, le=100, description="Number of recent logs to return"),
+):
+    """
+    Get recent activity logs (Admin endpoint).
+    
+    Query Parameters:
+        limit: Number of recent logs to return (default: 10, max: 100)
+    
+    Returns:
+        List of recent activity logs
+    """
+    try:
+        result = await activity_logs_service.get_recent_activity_logs(limit=limit)
+        
+        return JSONResponse(content=result)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error getting recent activity logs: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to get recent activity logs: {str(e)}")
+
+
 @router.get("/")
 async def root():
     """API root endpoint with documentation."""
@@ -1471,6 +1991,7 @@ async def root():
                 "No data mixing",
                 "Full lists in side-by-side comparison",
                 "Admin Hakim Score Management",
+                "Admin Activity Logs Management",
             ],
         }
     )

@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import zipfile
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from io import BytesIO
@@ -405,6 +406,192 @@ class PDFGeneratorService:
             logger.error(traceback.format_exc())
             raise
     
+    def generate_strategic_memo_pdf(
+        self,
+        comparison_data: Dict[str, Any],
+        comparison_id: str
+    ) -> BytesIO:
+        """
+        Generate 1-page strategic memo PDF report.
+        
+        This is a high-level executive brief optimized for decision makers.
+        
+        Args:
+            comparison_data: Complete comparison data from API
+            comparison_id: Comparison ID for filename
+            
+        Returns:
+            BytesIO buffer containing PDF bytes
+        """
+        if not REPORTLAB_AVAILABLE:
+            raise ImportError(
+                "ReportLab is not installed. Please install it with: pip install reportlab==4.2.5"
+            )
+        
+        try:
+            logger.info(f"🔍 Generating 1-page strategic memo for: {comparison_id}")
+            self._validate_comparison_data(comparison_data)
+            buffer = BytesIO()
+            doc = BorderedDocTemplate(
+                buffer,
+                pagesize=letter,
+                rightMargin=0.75*inch,
+                leftMargin=0.75*inch,
+                topMargin=1*inch,
+                bottomMargin=0.75*inch
+            )
+            
+            story = []
+            
+            # Cover page with logo
+            try:
+                logger.info("📄 Building cover page for strategic memo...")
+                story.extend(self._build_cover_page(comparison_data, comparison_id))
+                story.append(PageBreak())
+                logger.info("✅ Cover page built successfully")
+            except Exception as e:
+                logger.error(f"❌ Error building cover page: {e}")
+                story.append(Paragraph("Insurance Quote Comparison Report", self.styles['CustomTitle']))
+                story.append(PageBreak())
+            
+            # Strategic memo (1-page only)
+            try:
+                logger.info("📄 Building strategic executive memo (1-page brief)...")
+                story.extend(self._build_strategic_memo(comparison_data))
+                logger.info("✅ Strategic memo built successfully")
+            except Exception as e:
+                logger.error(f"❌ Error building strategic memo: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # Build PDF
+            doc.build(story)
+            buffer.seek(0)
+            
+            logger.info(f"✅ Generated strategic memo PDF for comparison: {comparison_id}")
+            return buffer
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating strategic memo PDF: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+    
+    def generate_detailed_comparison_pdf(
+        self,
+        comparison_data: Dict[str, Any],
+        comparison_id: str
+    ) -> BytesIO:
+        """
+        Generate detailed comparison PDF report.
+        
+        This is a comprehensive technical report with all comparison details.
+        
+        Args:
+            comparison_data: Complete comparison data from API
+            comparison_id: Comparison ID for filename
+            
+        Returns:
+            BytesIO buffer containing PDF bytes
+        """
+        if not REPORTLAB_AVAILABLE:
+            raise ImportError(
+                "ReportLab is not installed. Please install it with: pip install reportlab==4.2.5"
+            )
+        
+        try:
+            logger.info(f"🔍 Generating detailed comparison PDF for: {comparison_id}")
+            self._validate_comparison_data(comparison_data)
+            buffer = BytesIO()
+            doc = BorderedDocTemplate(
+                buffer,
+                pagesize=letter,
+                rightMargin=0.75*inch,
+                leftMargin=0.75*inch,
+                topMargin=1*inch,
+                bottomMargin=0.75*inch
+            )
+            
+            story = []
+            
+            # Cover page with logo
+            try:
+                logger.info("📄 Building cover page for detailed comparison...")
+                story.extend(self._build_cover_page(comparison_data, comparison_id))
+                # Note: PageBreak is handled inside _build_detailed_comparison_factors
+                logger.info("✅ Cover page built successfully")
+            except Exception as e:
+                logger.error(f"❌ Error building cover page: {e}")
+                story.append(Paragraph("Insurance Quote Comparison Report", self.styles['CustomTitle']))
+                # Note: PageBreak is handled inside _build_detailed_comparison_factors
+            
+            # Detailed Analysis section (this will add its own PageBreak to start on new page)
+            try:
+                logger.info("📄 Building detailed comparison factors...")
+                story.extend(self._build_detailed_comparison_factors(comparison_data))
+                story.append(Spacer(1, 0.3*inch))
+                logger.info("✅ Detailed comparison factors built successfully")
+            except Exception as e:
+                logger.error(f"❌ Error building detailed comparison factors: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # Key Differences section
+            try:
+                logger.info("📄 Building key differences section...")
+                story.extend(self._build_key_differences_section(comparison_data))
+                story.append(Spacer(1, 0.3*inch))
+                logger.info("✅ Key differences section built successfully")
+            except Exception as e:
+                logger.error(f"❌ Error building key differences section: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # Data Table section
+            try:
+                logger.info("📄 Building data table section...")
+                story.extend(self._build_data_table_section(comparison_data))
+                story.append(Spacer(1, 0.3*inch))
+                logger.info("✅ Data table section built successfully")
+            except Exception as e:
+                logger.error(f"❌ Error building data table section: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # Side-by-Side section
+            try:
+                logger.info("📄 Building side-by-side section...")
+                story.extend(self._build_side_by_side_section(comparison_data))
+                story.append(Spacer(1, 0.3*inch))
+                logger.info("✅ Side-by-side section built successfully")
+            except Exception as e:
+                logger.error(f"❌ Error building side-by-side section: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # Analytics/Charts section
+            try:
+                logger.info("📄 Building analytics section...")
+                story.extend(self._build_analytics_section(comparison_data))
+                logger.info("✅ Analytics section built successfully")
+            except Exception as e:
+                logger.error(f"❌ Error building analytics section: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            
+            # Build PDF
+            doc.build(story)
+            buffer.seek(0)
+            
+            logger.info(f"✅ Generated detailed comparison PDF for comparison: {comparison_id}")
+            return buffer
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating detailed comparison PDF: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
+    
     def _build_cover_page(
         self,
         comparison_data: Dict[str, Any],
@@ -413,23 +600,44 @@ class PDFGeneratorService:
         """Build minimalist cover page with centered logo and title."""
         story = []
         
+        # Add some top spacing
+        story.append(Spacer(1, 2*inch))
+        
         # Logo at top (larger and centered)
         logo = self._create_logo_element(width=3*inch)
         if logo:
             logo.hAlign = 'CENTER'
-            story.append(Spacer(1, 1*inch))
             story.append(logo)
             story.append(Spacer(1, 0.5*inch))
         else:
             # Text logo if image not available
             logo_text = Paragraph("HAKEM.AI", self.styles['CustomTitle'])
-            story.append(Spacer(1, 1*inch))
+            logo_text.alignment = TA_CENTER
             story.append(logo_text)
             story.append(Spacer(1, 0.5*inch))
         
         # Centered title
         title = Paragraph("AI Powered Comparison Report", self.styles['CustomTitle'])
+        title.alignment = TA_CENTER
         story.append(title)
+        
+        # Add date info (comparison ID removed per user request)
+        story.append(Spacer(1, 0.3*inch))
+        date_text = Paragraph(
+            f"Generated on {datetime.now().strftime('%B %d, %Y at %I:%M %p')}",
+            ParagraphStyle(
+                'CoverDate',
+                parent=self.styles['Normal'],
+                fontSize=10,
+                textColor=colors.grey,
+                alignment=TA_CENTER,
+                spaceAfter=12
+            )
+        )
+        story.append(date_text)
+        
+        # Add bottom spacing to ensure content is visible
+        story.append(Spacer(1, 1*inch))
         
         return story
     
@@ -594,21 +802,6 @@ class PDFGeneratorService:
             story.append(Paragraph(factor, compact_style))
         
         story.append(Spacer(1, 0.1*inch))
-        
-        # Next Steps - More compact
-        story.append(Paragraph("NEXT ACTIONS", self.styles['SubsectionHeading']))
-        story.append(Spacer(1, 0.08*inch))
-        
-        next_steps = [
-            "1. Review detailed technical analysis (following pages)",
-            "2. Validate coverage against business requirements",
-            "3. Consult legal team on exclusions & terms",
-            "4. Request final binding quotes from top providers"
-        ]
-        
-        compact_steps_style = ParagraphStyle('CompactSteps', parent=self.styles['CustomBodyText'], fontSize=9, spaceAfter=3)
-        for step in next_steps:
-            story.append(Paragraph(step, compact_steps_style))
         
         return story
     
@@ -845,6 +1038,139 @@ class PDFGeneratorService:
                                      "Request claims history data from top 3 providers.",
                                      tech_rec_style))
                 story.append(Spacer(1, 0.15*inch))
+        
+        # 3.5. Benefits per Provider
+        story.append(Paragraph("3.5. Benefits Comparison per Provider", self.styles['SubsectionHeading']))
+        story.append(Spacer(1, 0.1*inch))
+        
+        # Try to get benefits from multiple sources
+        benefits_found = False
+        
+        # First, try from data_table rows
+        if rows:
+            for row in rows[:5]:  # Top 5 providers
+                if isinstance(row, dict):
+                    provider_name = row.get("provider_name") or row.get("provider") or row.get("company") or "N/A"
+                    
+                    # Get benefits list - try multiple keys
+                    benefits_list = None
+                    if "benefits" in row:
+                        benefits_val = row.get("benefits")
+                        if isinstance(benefits_val, list):
+                            benefits_list = benefits_val
+                        elif isinstance(benefits_val, (int, float)):
+                            # If it's a number, skip - we need the actual list
+                            continue
+                    
+                    # If not found in benefits, try from extracted_quotes or side_by_side
+                    if not benefits_list or len(benefits_list) == 0:
+                        # Try to find provider in side_by_side data
+                        if side_by_side and side_by_side.get("providers"):
+                            for provider in side_by_side.get("providers", []):
+                                if provider.get("name") == provider_name or provider.get("company") == provider_name:
+                                    benefits_list = provider.get("benefits", [])
+                                    if isinstance(benefits_list, list) and len(benefits_list) > 0:
+                                        break
+                    
+                    # If still not found, try from extracted_quotes in comparison_data
+                    if (not benefits_list or len(benefits_list) == 0) and comparison_data.get("extracted_quotes"):
+                        for quote in comparison_data.get("extracted_quotes", []):
+                            quote_company = quote.get("company") or quote.get("insurer_name") or quote.get("provider_name")
+                            if quote_company and (quote_company in provider_name or provider_name in quote_company):
+                                benefits_list = quote.get("benefits", [])
+                                if isinstance(benefits_list, list) and len(benefits_list) > 0:
+                                    break
+                    
+                    # Display benefits if found - LIST ALL BENEFITS (no limit)
+                    if benefits_list and isinstance(benefits_list, list) and len(benefits_list) > 0:
+                        benefits_found = True
+                        story.append(Paragraph(f"<b>{provider_name}</b>", self.styles['CompanyName']))
+                        story.append(Spacer(1, 0.05*inch))
+                        
+                        # Display ALL benefits - no truncation
+                        benefits_text = []
+                        for benefit in benefits_list:  # Show ALL benefits, no limit
+                            benefit_text = str(benefit) if isinstance(benefit, str) else benefit.get("text", str(benefit))
+                            if self._is_valid_item_text(benefit_text):
+                                benefits_text.append(f"• {benefit_text}")
+                        
+                        if benefits_text:
+                            # Create a compact paragraph style for benefits
+                            benefits_style = ParagraphStyle(
+                                'BenefitsText',
+                                parent=self.styles['CustomBodyText'],
+                                fontSize=8,
+                                spaceAfter=3,
+                                leftIndent=0.2*inch,
+                                bulletIndent=0.2*inch
+                            )
+                            
+                            # Display all benefits
+                            for benefit_item in benefits_text:
+                                story.append(Paragraph(benefit_item, benefits_style))
+                            
+                            # Show total count at the end
+                            total_benefits = len(benefits_text)
+                            story.append(Paragraph(
+                                f"<i>(Total: {total_benefits} benefits)</i>",
+                                ParagraphStyle('TotalBenefits', parent=self.styles['CustomBodyText'], 
+                                              fontSize=7, textColor=colors.grey, leftIndent=0.2*inch, spaceBefore=4)
+                            ))
+                        else:
+                            story.append(Paragraph("• Standard benefits apply", self.styles['CustomBodyText']))
+                        
+                        story.append(Spacer(1, 0.1*inch))
+        
+        # If no benefits found from rows, try side_by_side providers directly
+        if not benefits_found and side_by_side and side_by_side.get("providers"):
+            for provider in side_by_side.get("providers", [])[:5]:
+                provider_name = provider.get("name") or provider.get("company") or "Unknown"
+                benefits_list = provider.get("benefits", [])
+                
+                if benefits_list and isinstance(benefits_list, list) and len(benefits_list) > 0:
+                    benefits_found = True
+                    story.append(Paragraph(f"<b>{provider_name}</b>", self.styles['CompanyName']))
+                    story.append(Spacer(1, 0.05*inch))
+                    
+                    # Display ALL benefits - no truncation
+                    benefits_text = []
+                    for benefit in benefits_list:  # Show ALL benefits, no limit
+                        benefit_text = str(benefit) if isinstance(benefit, str) else benefit.get("text", str(benefit))
+                        if self._is_valid_item_text(benefit_text):
+                            benefits_text.append(f"• {benefit_text}")
+                    
+                    if benefits_text:
+                        benefits_style = ParagraphStyle(
+                            'BenefitsText',
+                            parent=self.styles['CustomBodyText'],
+                            fontSize=8,
+                            spaceAfter=3,
+                            leftIndent=0.2*inch,
+                            bulletIndent=0.2*inch
+                        )
+                        
+                        # Display all benefits
+                        for benefit_item in benefits_text:
+                            story.append(Paragraph(benefit_item, benefits_style))
+                        
+                        # Show total count at the end
+                        total_benefits = len(benefits_text)
+                        story.append(Paragraph(
+                            f"<i>(Total: {total_benefits} benefits)</i>",
+                            ParagraphStyle('TotalBenefits', parent=self.styles['CustomBodyText'], 
+                                          fontSize=7, textColor=colors.grey, leftIndent=0.2*inch, spaceBefore=4)
+                        ))
+                    
+                    story.append(Spacer(1, 0.1*inch))
+        
+        # If still no benefits found, show a message
+        if not benefits_found:
+            story.append(Paragraph(
+                "Benefits information is being processed. Please refer to the detailed data table for benefit counts.",
+                self.styles['CustomBodyText']
+            ))
+        
+        story.append(Spacer(1, 0.15*inch))
         
         # 4. Policy Terms & Conditions
         story.append(Paragraph("4. Policy Terms & Subjectivities", self.styles['SubsectionHeading']))
