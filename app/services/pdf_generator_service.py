@@ -545,42 +545,9 @@ class PDFGeneratorService:
                 import traceback
                 logger.error(traceback.format_exc())
             
-            # Key Differences section
+            # Analytics/Charts section (keep only overall score comparison, remove other duplicated tables)
             try:
-                logger.info("📄 Building key differences section...")
-                story.extend(self._build_key_differences_section(comparison_data))
-                story.append(Spacer(1, 0.3*inch))
-                logger.info("✅ Key differences section built successfully")
-            except Exception as e:
-                logger.error(f"❌ Error building key differences section: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-            
-            # Data Table section
-            try:
-                logger.info("📄 Building data table section...")
-                story.extend(self._build_data_table_section(comparison_data))
-                story.append(Spacer(1, 0.3*inch))
-                logger.info("✅ Data table section built successfully")
-            except Exception as e:
-                logger.error(f"❌ Error building data table section: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-            
-            # Side-by-Side section
-            try:
-                logger.info("📄 Building side-by-side section...")
-                story.extend(self._build_side_by_side_section(comparison_data))
-                story.append(Spacer(1, 0.3*inch))
-                logger.info("✅ Side-by-side section built successfully")
-            except Exception as e:
-                logger.error(f"❌ Error building side-by-side section: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-            
-            # Analytics/Charts section
-            try:
-                logger.info("📄 Building analytics section...")
+                logger.info("📄 Building analytics section (overall score comparison only)...")
                 story.extend(self._build_analytics_section(comparison_data))
                 logger.info("✅ Analytics section built successfully")
             except Exception as e:
@@ -681,7 +648,7 @@ class PDFGeneratorService:
             line_of_insurance = first_quote.get("policy_type") or first_quote.get("insurance_type") or first_quote.get("line_of_business") or "Property Insurance"
         
         memo_info = [
-            f"<b>TO:</b> Decision Makers | <b>FROM:</b> HAKEM.AI | <b>DATE:</b> {datetime.now().strftime('%B %d, %Y')}",
+            f"<b>TO:</b> Decision Makers | <b>DATE:</b> {datetime.now().strftime('%B %d, %Y')}",
             f"<b>SUBJECT:</b> Insurance Quote Comparison - Strategic Recommendation",
             f"<b>Line of Insurance:</b> {line_of_insurance}"
         ]
@@ -716,12 +683,13 @@ class PDFGeneratorService:
             price_range_high = max(premiums) if premiums else 0
             price_variance = ((price_range_high - price_range_low) / price_range_low * 100) if price_range_low > 0 else 0
             
-            # Count providers that will be shown in table
-            providers_to_show = min(len(ranking), 4)  # We show top 4 in the table
+            # Show actual number of providers analyzed
+            actual_provider_count = len(ranking)
+            providers_to_show = min(actual_provider_count, 8)  # Table should fit 8 companies
             
-            # Strategic overview - more concise, ensure count matches table
+            # Strategic overview - show actual count
             overview_text = f"""
-            Analyzed <b>{providers_to_show} providers</b> (showing top {providers_to_show}). <b>{best_name}</b> ranks #1 with score {best_score:.1f} at SAR {best_premium:,.2f}. 
+            Analyzed <b>{actual_provider_count} providers</b>. <b>{best_name}</b> ranks #1 with score {best_score:.1f} at SAR {best_premium:,.2f}. 
             Premium variance: {price_variance:.1f}% (SAR {price_range_low:,.2f} - SAR {price_range_high:,.2f}).
             """
             story.append(Paragraph(overview_text, self.styles['CustomBodyText']))
@@ -752,14 +720,16 @@ class PDFGeneratorService:
             # Update reasoning to include deductible and remove sum insured/coverage limit references
             if recommendation_reasoning:
                 # Remove any sum insured or coverage limit mentions (since it's fixed for all insurers)
-                updated_reasoning = recommendation_reasoning.replace("sum insured", "")
-                updated_reasoning = updated_reasoning.replace("Sum Insured", "")
-                updated_reasoning = updated_reasoning.replace("coverage limit", "")
-                updated_reasoning = updated_reasoning.replace("Coverage Limit", "")
-                updated_reasoning = updated_reasoning.replace("substantial coverage limit", "")
-                updated_reasoning = updated_reasoning.replace("coverage of", "")
-                # Clean up any double spaces
+                updated_reasoning = recommendation_reasoning
+                # Remove sum insured mentions
+                updated_reasoning = re.sub(r'\b(sum insured|Sum Insured)\b[^.]*\.?', '', updated_reasoning, flags=re.IGNORECASE)
+                # Remove coverage limit mentions
+                updated_reasoning = re.sub(r'\b(coverage limit|Coverage Limit|substantial coverage limit|coverage of)\b[^.]*\.?', '', updated_reasoning, flags=re.IGNORECASE)
+                # Remove any numbers that look like sum insured values (millions/billions)
+                updated_reasoning = re.sub(r'\b(SAR|SR)\s*[\d,]+\.?\d*\s*(million|billion|M|B)\b', '', updated_reasoning, flags=re.IGNORECASE)
+                # Clean up any double spaces or trailing punctuation
                 updated_reasoning = re.sub(r'\s+', ' ', updated_reasoning).strip()
+                updated_reasoning = re.sub(r'\s*\.\s*\.', '.', updated_reasoning)  # Fix double periods
                 
                 # Add deductible consideration if we have deductible data
                 if deductibles:
@@ -785,14 +755,14 @@ class PDFGeneratorService:
             story.append(Paragraph(fallback_text, self.styles['Highlight']))
             story.append(Spacer(1, 0.1*inch))
         
-        # Top Providers Comparison - Compact table
+        # Top Providers Comparison - Compact table (fit 8 companies)
         if len(ranking) >= 2:
             story.append(Paragraph("PROVIDER COMPARISON", self.styles['SubsectionHeading']))
             story.append(Spacer(1, 0.08*inch))
             
             alt_data = [["Rank", "Provider", "Score", "Premium (SAR)"]]
             
-            for i, provider in enumerate(ranking[:4], 1):  # Top 4 providers
+            for i, provider in enumerate(ranking[:8], 1):  # Top 8 providers to fit on page
                 if isinstance(provider, dict):
                     rank = str(i)
                     company = provider.get("company", "N/A")
@@ -896,12 +866,19 @@ class PDFGeneratorService:
         providers_data = side_by_side.get("providers", []) if side_by_side else []
         
         if rows:
-            # Table: Provider | Count of Subjectivities | Count of Exclusions (REMOVED Coverage Limit column per requirement)
-            coverage_data = [["Provider", "Count of Subjectivities", "Count of Exclusions"]]
+            # Table: Provider | Count of Benefits | Count of Subjectivities | Count of Exclusions
+            coverage_data = [["Provider", "Count of Benefits", "Count of Subjectivities", "Count of Exclusions"]]
             
             for row in rows:  # ALL providers
                 if isinstance(row, dict):
                     name = row.get("provider_name") or row.get("provider") or row.get("company") or "N/A"
+                    
+                    # Get benefits count
+                    benefits_val = row.get("benefits") or row.get("benefits_count") or 0
+                    if isinstance(benefits_val, list):
+                        benefits_count = len(benefits_val)
+                    else:
+                        benefits_count = int(benefits_val) if benefits_val else 0
                     
                     # Get subjectivities count
                     subj_count = 0
@@ -922,6 +899,7 @@ class PDFGeneratorService:
                     name_para = Paragraph(str(name), self.styles['CustomBodyText'])
                     coverage_data.append([
                         name_para,
+                        str(benefits_count),
                         str(subj_count),
                         str(excl_count)
                     ])
@@ -929,9 +907,10 @@ class PDFGeneratorService:
             if len(coverage_data) > 1:
                 available_width = self.page_width - 1.5*inch
                 coverage_table = Table(coverage_data, colWidths=[
-                    available_width * 0.50,
-                    available_width * 0.25,
-                    available_width * 0.25
+                    available_width * 0.40,
+                    available_width * 0.20,
+                    available_width * 0.20,
+                    available_width * 0.20
                 ])
                 coverage_table.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, 0), HexColor('#4A7C2A')),
@@ -948,6 +927,14 @@ class PDFGeneratorService:
                     ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#F5F5F5')]),
                 ]))
                 story.append(coverage_table)
+                story.append(Spacer(1, 0.1*inch))
+                
+                # Add technical recommendation one-liner
+                tech_rec_style = ParagraphStyle('TechRec', parent=self.styles['CustomBodyText'], 
+                                               fontSize=9, textColor=HexColor('#2D5016'), 
+                                               leftIndent=0.2*inch, spaceAfter=6)
+                story.append(Paragraph("<b>✓ Technical Recommendation:</b> Select providers with lower subjectivities and exclusions counts for better coverage terms.",
+                                     tech_rec_style))
                 story.append(Spacer(1, 0.15*inch))
     
     def _build_detailed_data_table_hakim_score(self, comparison_data: Dict[str, Any], story: List) -> None:
@@ -1168,22 +1155,34 @@ class PDFGeneratorService:
         story.append(detail_title)
         story.append(Spacer(1, 0.05*inch))  # Reduced spacing
         
-        # Extract line of business and total sum insured
+        # Extract line of business and total sum insured (sum insured is same for all, get from data_table)
         line_of_business = "Property Insurance"  # Default
         total_sum_insured = 0
         extracted_quotes = comparison_data.get("extracted_quotes", [])
+        data_table = comparison_data.get("data_table", {})
+        rows = data_table.get("rows", [])
+        
         if extracted_quotes and len(extracted_quotes) > 0:
             first_quote = extracted_quotes[0]
             line_of_business = first_quote.get("policy_type") or first_quote.get("insurance_type") or first_quote.get("line_of_business") or "Property Insurance"
-            sum_insured_val = first_quote.get("sum_insured") or first_quote.get("coverage_limit") or first_quote.get("coverage")
-            if sum_insured_val:
-                # Extract number from string if needed
-                if isinstance(sum_insured_val, str):
-                    numbers = re.findall(r'[\d,]+', str(sum_insured_val).replace(" ", ""))
-                    if numbers:
-                        total_sum_insured = float(numbers[0].replace(",", ""))
-                else:
-                    total_sum_insured = float(sum_insured_val)
+        
+        # Get sum insured from data_table rows (should be consistent across all)
+        if rows:
+            for row in rows:
+                if isinstance(row, dict):
+                    coverage_val = row.get("coverage") or row.get("coverage_limit") or row.get("sum_insured")
+                    if coverage_val:
+                        # Extract number from string if needed
+                        if isinstance(coverage_val, str):
+                            numbers = re.findall(r'[\d,]+', str(coverage_val).replace(" ", ""))
+                            if numbers:
+                                # Get the largest number (sum insured is usually the largest)
+                                largest_num = max(numbers, key=lambda x: len(x.replace(",", "")))
+                                total_sum_insured = float(largest_num.replace(",", ""))
+                                break
+                        else:
+                            total_sum_insured = float(coverage_val)
+                            break
         
         # Add line of business and sum insured information at the top
         intro_info_style = ParagraphStyle(
@@ -1256,24 +1255,52 @@ class PDFGeneratorService:
                         provider_subj_map[provider_name].add(subj_text)
             
             if all_subjectivities:
+                # Helper function to get short company name
+                def get_short_name(full_name):
+                    """Get short name for company (use common abbreviations or first word)."""
+                    short_names = {
+                        "Chubb Arabia": "Chubb",
+                        "Tawuniya": "Tawuniya",
+                        "Liva Insurance": "Liva",
+                        "Al Rajhi Takaful": "Al Rajhi",
+                        "Gulf Insurance Group": "GIG",
+                        "United Cooperative Assurance": "UCA",
+                    }
+                    # Check exact match first
+                    if full_name in short_names:
+                        return short_names[full_name]
+                    # Check partial match
+                    for key, short in short_names.items():
+                        if key in full_name or full_name in key:
+                            return short
+                    # Use first word if name is long
+                    words = full_name.split()
+                    if len(words) > 2:
+                        return words[0]
+                    return full_name[:15]  # Truncate if still long
+                
                 # Build subjectivities table with Y/N or check/cross
                 subj_list = sorted(list(all_subjectivities))[:10]  # Limit to top 10
-                header_row = ["Subjectivity"] + [p.get("name", "Provider") for p in providers_data[:5]]
+                # Use short names for header
+                provider_short_names = [get_short_name(p.get("name", "Provider")) for p in providers_data[:5]]
+                header_row = [Paragraph("Subjectivity", ParagraphStyle('SubjHeader', parent=self.styles['CustomBodyText'], fontSize=8, fontName='Helvetica-Bold'))] + [Paragraph(name, ParagraphStyle('SubjHeader', parent=self.styles['CustomBodyText'], fontSize=8, fontName='Helvetica-Bold')) for name in provider_short_names]
                 subj_table_data = [header_row]
                 
                 for subj in subj_list:
-                    row = [Paragraph(subj[:60] + "..." if len(subj) > 60 else subj, 
-                                   ParagraphStyle('SubjCell', parent=self.styles['CustomBodyText'], fontSize=7))]
+                    # Wrap subjectivity text properly
+                    subj_text = subj[:50] + "..." if len(subj) > 50 else subj
+                    row = [Paragraph(subj_text, 
+                                   ParagraphStyle('SubjCell', parent=self.styles['CustomBodyText'], fontSize=7, wordWrap='LTR'))]
                     for provider in providers_data[:5]:
                         provider_name = provider.get("name", "Unknown")
                         has_subj = subj in provider_subj_map.get(provider_name, set())
-                        row.append("✓" if has_subj else "✗")
+                        row.append(Paragraph("✓" if has_subj else "✗", ParagraphStyle('SubjCell', parent=self.styles['CustomBodyText'], fontSize=9, alignment=TA_CENTER)))
                     subj_table_data.append(row)
                 
                 if len(subj_table_data) > 1:
                     available_width = self.page_width - 1.5*inch
                     num_providers = len(subj_table_data[0]) - 1
-                    col_widths = [available_width * 0.4] + [available_width * 0.6 / num_providers] * num_providers
+                    col_widths = [available_width * 0.45] + [available_width * 0.55 / num_providers] * num_providers
                     
                     subj_table = Table(subj_table_data, colWidths=col_widths)
                     subj_table.setStyle(TableStyle([
@@ -1282,12 +1309,13 @@ class PDFGeneratorService:
                         ('ALIGN', (0, 0), (0, -1), 'LEFT'),
                         ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
                         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('WORDWRAP', (0, 0), (-1, -1), True),
                         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                        ('FONTSIZE', (0, 0), (-1, 0), 7),
-                        ('FONTSIZE', (1, 0), (-1, -1), 9),
+                        ('FONTSIZE', (0, 0), (-1, 0), 8),
+                        ('FONTSIZE', (1, 0), (-1, -1), 8),
                         ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                        ('TOPPADDING', (0, 0), (-1, -1), 4),
-                        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                        ('TOPPADDING', (0, 0), (-1, -1), 6),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
                         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#F5F5F5')]),
                     ]))
                     story.append(subj_table)
@@ -1470,45 +1498,58 @@ class PDFGeneratorService:
         
         story.append(Spacer(1, 0.15*inch))
         
-        # 4. Policy Terms & Conditions
-        story.append(Paragraph("4. Policy Terms & Subjectivities", self.styles['SubsectionHeading']))
-        story.append(Spacer(1, 0.1*inch))
+        # Final Technical Recommendation (moved here, removed Key Insights section)
+        story.append(Paragraph("Final Technical Recommendation", self.styles['SubsectionHeading']))
+        story.append(Spacer(1, 0.08*inch))
         
-        terms_intro = """
-        Policy subjectivities are conditions that must be met for coverage to apply. 
-        Understanding these terms is essential for ensuring claims are processed successfully.
-        """
-        story.append(Paragraph(terms_intro, self.styles['CustomBodyText']))
-        story.append(Spacer(1, 0.1*inch))
+        # Get recommendation from comparison data
+        key_differences = comparison_data.get("key_differences", {})
+        recommendation = key_differences.get("recommendation", "")
+        recommendation_reasoning = key_differences.get("recommendation_reasoning", "")
         
-        if providers_data:
-            for provider in providers_data[:3]:
-                provider_name = provider.get("name", "Unknown")
-                subjectivities = provider.get("subjectivities", [])
-                
-                if subjectivities:
-                    story.append(Paragraph(f"<b>{provider_name}</b>", self.styles['CompanyName']))
-                    
-                    subj_count = 0
-                    for subj in subjectivities[:5]:  # Top 5 subjectivities
-                        subj_text = str(subj) if isinstance(subj, str) else subj.get("text", str(subj))
-                        if self._is_valid_item_text(subj_text):
-                            story.append(Paragraph(f"• {subj_text}", self.styles['CustomBodyText']))
-                            subj_count += 1
-                    
-                    if subj_count == 0:
-                        story.append(Paragraph("• Standard policy terms apply", self.styles['CustomBodyText']))
-                    
-                    story.append(Spacer(1, 0.1*inch))
+        if recommendation and recommendation_reasoning:
+            # Remove any sum insured/coverage limit mentions from reasoning
+            clean_reasoning = recommendation_reasoning
+            clean_reasoning = re.sub(r'\b(sum insured|Sum Insured|coverage limit|Coverage Limit|substantial coverage)\b[^.]*\.?', '', clean_reasoning, flags=re.IGNORECASE)
+            clean_reasoning = re.sub(r'\s+', ' ', clean_reasoning).strip()
+            
+            final_rec_text = f"""
+            Based on comprehensive analysis of coverage quality, pricing competitiveness, policy terms, and 
+            risk assessment, we recommend <b>{recommendation}</b>. {clean_reasoning}
+            
+            This recommendation considers the optimal balance between coverage adequacy, premium efficiency, 
+            and favorable policy conditions including subjectivities, exclusions, and deductibles.
+            """
+        else:
+            # Fallback recommendation based on ranking
+            summary = comparison_data.get("summary", {})
+            ranking = summary.get("ranking", [])
+            if ranking and len(ranking) > 0:
+                top_provider = ranking[0].get("company", "the top-ranked provider")
+                final_rec_text = f"""
+                Based on comprehensive analysis of coverage quality, pricing competitiveness, policy terms, and 
+                risk assessment, we recommend <b>{top_provider}</b> as the optimal choice. This provider offers 
+                the best balance between coverage adequacy, premium efficiency, and favorable policy conditions 
+                including subjectivities, exclusions, and deductibles.
+                """
+            else:
+                final_rec_text = """
+                Based on comprehensive analysis, we recommend selecting the provider that offers the best balance 
+                between coverage adequacy, premium efficiency, and favorable policy conditions including subjectivities, 
+                exclusions, and deductibles. Please review the detailed comparison tables above for specific metrics.
+                """
         
-        # Technical Recommendation for Policy Terms
-        tech_rec_style = ParagraphStyle('TechRec', parent=self.styles['CustomBodyText'], 
-                                       fontSize=9, textColor=HexColor('#2D5016'), 
-                                       leftIndent=0.2*inch, spaceAfter=6)
-        story.append(Paragraph("<b>✓ Technical Recommendation:</b> Document all subjectivities and assign compliance ownership. "
-                             "Schedule risk surveys within required timeframes. Establish monitoring systems for ongoing warranty compliance. "
-                             "Non-compliance may void coverage - create compliance checklist before binding.",
-                             tech_rec_style))
+        final_rec_style = ParagraphStyle(
+            'FinalRecommendation',
+            parent=self.styles['CustomBodyText'],
+            fontSize=10,
+            textColor=HexColor('#2D5016'),
+            spaceAfter=8,
+            alignment=TA_JUSTIFY,
+            leftIndent=0.2*inch,
+            rightIndent=0.2*inch
+        )
+        story.append(Paragraph(final_rec_text, final_rec_style))
         story.append(Spacer(1, 0.15*inch))
         
         return story
@@ -2432,77 +2473,7 @@ class PDFGeneratorService:
                 story.append(score_table)
                 story.append(Spacer(1, 0.2*inch))
         
-        # Key Insights
-        insights = analytics.get("insights", [])
-        if insights:
-            # Filter out "Hakim Score integration" or metadata insights
-            filtered_insights = [
-                insight for insight in insights
-                if not any(keyword in str(insight).lower() for keyword in [
-                    'hakim score integration',
-                    'integration: enabled',
-                    'integration enabled'
-                ])
-            ]
-            
-            if filtered_insights:
-                story.append(Paragraph("Key Insights", self.styles['SubsectionHeading']))
-                story.append(Spacer(1, 0.1*inch))
-                
-                for insight in filtered_insights[:5]:  # Limit to 5 insights
-                    insight_text = Paragraph(f"• {insight}", self.styles['CustomBodyText'])
-                    story.append(insight_text)
-                    story.append(Spacer(1, 0.08*inch))
-                
-                # Add final technical recommendation paragraph
-                story.append(Spacer(1, 0.15*inch))
-                story.append(Paragraph("Final Technical Recommendation", self.styles['SubsectionHeading']))
-                story.append(Spacer(1, 0.08*inch))
-                
-                # Get recommendation from comparison data
-                key_differences = comparison_data.get("key_differences", {})
-                recommendation = key_differences.get("recommendation", "")
-                recommendation_reasoning = key_differences.get("recommendation_reasoning", "")
-                
-                if recommendation and recommendation_reasoning:
-                    final_rec_text = f"""
-                    Based on comprehensive analysis of coverage quality, pricing competitiveness, policy terms, and 
-                    risk assessment, we recommend <b>{recommendation}</b>. {recommendation_reasoning}
-                    
-                    This recommendation considers the optimal balance between coverage adequacy, premium efficiency, 
-                    and favorable policy conditions including subjectivities, exclusions, and deductibles.
-                    """
-                else:
-                    # Fallback recommendation based on ranking
-                    summary = comparison_data.get("summary", {})
-                    ranking = summary.get("ranking", [])
-                    if ranking and len(ranking) > 0:
-                        top_provider = ranking[0].get("company", "the top-ranked provider")
-                        final_rec_text = f"""
-                        Based on comprehensive analysis of coverage quality, pricing competitiveness, policy terms, and 
-                        risk assessment, we recommend <b>{top_provider}</b> as the optimal choice. This provider offers 
-                        the best balance between coverage adequacy, premium efficiency, and favorable policy conditions 
-                        including subjectivities, exclusions, and deductibles.
-                        """
-                    else:
-                        final_rec_text = """
-                        Based on comprehensive analysis, we recommend selecting the provider that offers the best balance 
-                        between coverage adequacy, premium efficiency, and favorable policy conditions including subjectivities, 
-                        exclusions, and deductibles. Please review the detailed comparison tables above for specific metrics.
-                        """
-                
-                final_rec_style = ParagraphStyle(
-                    'FinalRecommendation',
-                    parent=self.styles['CustomBodyText'],
-                    fontSize=10,
-                    textColor=HexColor('#2D5016'),
-                    spaceAfter=8,
-                    alignment=TA_JUSTIFY,
-                    leftIndent=0.2*inch,
-                    rightIndent=0.2*inch
-                )
-                story.append(Paragraph(final_rec_text, final_rec_style))
-                story.append(Spacer(1, 0.15*inch))
+        # Key Insights section removed per client requirement - Final Technical Recommendation is in _build_detailed_comparison_factors
         
         return story
 
