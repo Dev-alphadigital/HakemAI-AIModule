@@ -721,15 +721,51 @@ class PDFGeneratorService:
             if recommendation_reasoning:
                 # Remove any sum insured or coverage limit mentions (since it's fixed for all insurers)
                 updated_reasoning = recommendation_reasoning
-                # Remove sum insured mentions
-                updated_reasoning = re.sub(r'\b(sum insured|Sum Insured)\b[^.]*\.?', '', updated_reasoning, flags=re.IGNORECASE)
-                # Remove coverage limit mentions
-                updated_reasoning = re.sub(r'\b(coverage limit|Coverage Limit|substantial coverage limit|coverage of)\b[^.]*\.?', '', updated_reasoning, flags=re.IGNORECASE)
-                # Remove any numbers that look like sum insured values (millions/billions)
-                updated_reasoning = re.sub(r'\b(SAR|SR)\s*[\d,]+\.?\d*\s*(million|billion|M|B)\b', '', updated_reasoning, flags=re.IGNORECASE)
-                # Clean up any double spaces or trailing punctuation
+                
+                # CRITICAL FIX: Clarify premium comparisons - fix confusing sentence structure
+                # Fix pattern: "and a [low/competitive] rate of X, significantly lower than Provider's SAR Y"
+                # Replace with: "with a [low/competitive] rate of X, compared to Provider's premium of SAR Y"
+                def fix_premium_comparison(match):
+                    rate_adj = match.group(2) + ' ' if match.group(2) else ''
+                    rate_type = match.group(3)
+                    rate_val = match.group(4)
+                    provider = match.group(6)
+                    premium_val = match.group(7)
+                    return f"with {rate_adj}{rate_type} of {rate_val}, compared to {provider}'s premium of SAR {premium_val}"
+                
+                updated_reasoning = re.sub(
+                    r'\band\s+(a|an)?\s*(low|high|competitive)?\s*(rate|premium)\s+of\s+([^,]+),\s+significantly\s+(lower|higher)\s+than\s+([A-Za-z\s\']+?)\'s\s+SAR\s+([\d,]+\.?\d*)',
+                    fix_premium_comparison,
+                    updated_reasoning,
+                    flags=re.IGNORECASE
+                )
+                # More general fix: "significantly lower than Provider's SAR X" -> "compared to Provider's premium of SAR X"
+                updated_reasoning = re.sub(
+                    r'\b(significantly|substantially)\s+(lower|higher)\s+than\s+([A-Za-z\s\']+?)\'s\s+SAR\s+([\d,]+\.?\d*)',
+                    r'compared to \3\'s premium of SAR \4',
+                    updated_reasoning,
+                    flags=re.IGNORECASE
+                )
+                # Fix: "Provider's SAR X" -> "Provider's premium of SAR X" (when not already "premium of")
+                updated_reasoning = re.sub(
+                    r'\b([A-Za-z\s\']+?)\'s\s+(?!premium\s+of\s+SAR)SAR\s+([\d,]+\.?\d*)(?=\s|\.|,|$)',
+                    r'\1\'s premium of SAR \2',
+                    updated_reasoning,
+                    flags=re.IGNORECASE
+                )
+                
+                # Remove explicit sum insured and coverage limit mentions
+                updated_reasoning = re.sub(r'\b(sum insured|Sum Insured|coverage limit|Coverage Limit|substantial coverage limit|total sum insured)\b[^.]*\.?', '', updated_reasoning, flags=re.IGNORECASE)
+                # Remove phrases with large numbers + billion/million (targeted: "offers a high 56 billion" pattern)
+                updated_reasoning = re.sub(r'\b(offers?|with|of|has|provides?)\s+(a|an)?\s*(high|total|maximum)?\s*[\d,]+\.?\d*\s*(billion|million)\b', '', updated_reasoning, flags=re.IGNORECASE)
+                # Remove standalone large numbers with billion/million (only very large numbers to avoid removing premiums)
+                updated_reasoning = re.sub(r'\b[\d,]{4,}\.?\d*\s*(billion|million)\b', '', updated_reasoning, flags=re.IGNORECASE)
+                # Remove SAR values with very large numbers (likely sum insured, not premiums)
+                updated_reasoning = re.sub(r'\b(SAR|SR)\s*[\d,]{9,}\b', '', updated_reasoning, flags=re.IGNORECASE)
+                # Clean up whitespace and punctuation
                 updated_reasoning = re.sub(r'\s+', ' ', updated_reasoning).strip()
-                updated_reasoning = re.sub(r'\s*\.\s*\.', '.', updated_reasoning)  # Fix double periods
+                updated_reasoning = re.sub(r'\s*,\s*,', ',', updated_reasoning)  # Remove double commas
+                updated_reasoning = re.sub(r'\s*\.\s*\.', '.', updated_reasoning)  # Remove double periods
                 
                 # Add deductible consideration if we have deductible data
                 if deductibles:
@@ -769,18 +805,29 @@ class PDFGeneratorService:
                     score = f"{provider.get('score', 0):.1f}"
                     premium = f"{provider.get('premium', 0):,.2f}"
                     
-                    # Create smaller font paragraph for company name
-                    company_style = ParagraphStyle('CompactBody', parent=self.styles['CustomBodyText'], fontSize=8)
-                    company_para = Paragraph(company, company_style)
+                    # Create paragraph for company name with appropriate font size
+                    # Font size will be handled by table style based on number of rows
+                    company_para = Paragraph(company, self.styles['CustomBodyText'])
                     alt_data.append([rank, company_para, score, premium])
             
             if len(alt_data) > 1:
                 available_width = self.page_width - 1.5*inch
+                # Optimized column widths to fit up to 8 providers with minimum 9pt font
+                num_rows = len(alt_data) - 1  # Exclude header
+                # Use minimum 9pt font for readability, adjust padding based on rows
+                table_font_size = 9  # Minimum 9pt for readability as required
+                if num_rows <= 4:
+                    row_padding = 4  # Reduced padding for 2-4 rows
+                elif num_rows <= 6:
+                    row_padding = 3  # Further reduced for 5-6 rows
+                else:  # 7-8 rows
+                    row_padding = 2  # Minimal padding for 7-8 rows to fit on page
+                
                 alt_table = Table(alt_data, colWidths=[
-                    available_width * 0.12,
-                    available_width * 0.42,
-                    available_width * 0.20,
-                    available_width * 0.26
+                    available_width * 0.10,  # Rank
+                    available_width * 0.40,  # Provider
+                    available_width * 0.25,  # Score
+                    available_width * 0.25   # Premium
                 ])
                 alt_table.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, 0), HexColor('#4A7C2A')),
@@ -790,14 +837,17 @@ class PDFGeneratorService:
                     ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
                     ('WORDWRAP', (0, 0), (-1, -1), True),
                     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 8),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                    ('TOPPADDING', (0, 0), (-1, -1), 6),
+                    ('FONTSIZE', (0, 0), (-1, 0), table_font_size),
+                    ('FONTSIZE', (0, 1), (-1, -1), table_font_size),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), row_padding),
+                    ('TOPPADDING', (0, 0), (-1, -1), row_padding),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 3),  # Minimal side padding
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 3),
                     ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
                     ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#F5F5F5')]),
                 ]))
                 story.append(alt_table)
-                story.append(Spacer(1, 0.1*inch))
+                story.append(Spacer(1, 0.08*inch))  # Reduced spacing after table
         
         # Critical Decision Factors - Compact
         story.append(Paragraph("KEY DECISION FACTORS", self.styles['SubsectionHeading']))
@@ -866,7 +916,7 @@ class PDFGeneratorService:
         providers_data = side_by_side.get("providers", []) if side_by_side else []
         
         if rows:
-            # Table: Provider | Count of Benefits | Count of Subjectivities | Count of Exclusions
+            # Table: Provider | Count of Benefits | Count of Subjectivities | Count of Exclusions (Benefits first as key comparative signal)
             coverage_data = [["Provider", "Count of Benefits", "Count of Subjectivities", "Count of Exclusions"]]
             
             for row in rows:  # ALL providers
@@ -1155,34 +1205,62 @@ class PDFGeneratorService:
         story.append(detail_title)
         story.append(Spacer(1, 0.05*inch))  # Reduced spacing
         
-        # Extract line of business and total sum insured (sum insured is same for all, get from data_table)
+        # Extract line of business and total sum insured (sum insured is same for all providers)
+        # Extract from multiple sources to ensure consistency - use the first valid value found
         line_of_business = "Property Insurance"  # Default
         total_sum_insured = 0
         extracted_quotes = comparison_data.get("extracted_quotes", [])
         data_table = comparison_data.get("data_table", {})
         rows = data_table.get("rows", [])
+        side_by_side = comparison_data.get("side_by_side", {})
         
+        # Helper function to extract numeric value from sum insured field
+        def extract_sum_insured_numeric(value):
+            """Extract numeric sum insured value from various formats."""
+            if not value:
+                return 0
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                # Remove common prefixes and extract numbers
+                cleaned = re.sub(r'[^\d,.]', '', value.replace(" ", ""))
+                numbers = re.findall(r'[\d,]+\.?\d*', cleaned)
+                if numbers:
+                    # Get the largest number (sum insured is usually the largest value)
+                    largest_num = max(numbers, key=lambda x: len(x.replace(",", "").replace(".", "")))
+                    try:
+                        return float(largest_num.replace(",", ""))
+                    except (ValueError, AttributeError):
+                        return 0
+            return 0
+        
+        # Priority 1: Try extracted_quotes (most reliable source)
         if extracted_quotes and len(extracted_quotes) > 0:
             first_quote = extracted_quotes[0]
             line_of_business = first_quote.get("policy_type") or first_quote.get("insurance_type") or first_quote.get("line_of_business") or "Property Insurance"
+            # Try multiple field names
+            for field in ["sum_insured", "sum_insured_total", "coverage_limit", "coverage", "total_sum_insured"]:
+                sum_insured_val = first_quote.get(field)
+                if sum_insured_val:
+                    total_sum_insured = extract_sum_insured_numeric(sum_insured_val)
+                    if total_sum_insured > 0:
+                        break
         
-        # Get sum insured from data_table rows (should be consistent across all)
-        if rows:
+        # Priority 2: Try data_table rows (fallback)
+        if total_sum_insured == 0 and rows:
             for row in rows:
                 if isinstance(row, dict):
-                    coverage_val = row.get("coverage") or row.get("coverage_limit") or row.get("sum_insured")
-                    if coverage_val:
-                        # Extract number from string if needed
-                        if isinstance(coverage_val, str):
-                            numbers = re.findall(r'[\d,]+', str(coverage_val).replace(" ", ""))
-                            if numbers:
-                                # Get the largest number (sum insured is usually the largest)
-                                largest_num = max(numbers, key=lambda x: len(x.replace(",", "")))
-                                total_sum_insured = float(largest_num.replace(",", ""))
+                    for field in ["sum_insured", "coverage_limit", "coverage", "sum_insured_total"]:
+                        coverage_val = row.get(field)
+                        if coverage_val:
+                            total_sum_insured = extract_sum_insured_numeric(coverage_val)
+                            if total_sum_insured > 0:
                                 break
-                        else:
-                            total_sum_insured = float(coverage_val)
-                            break
+                    if total_sum_insured > 0:
+                        break
+        
+        # Store sum insured value for consistent use throughout (used ONLY in header, NOT in rationale)
+        _total_sum_insured_value = total_sum_insured
         
         # Add line of business and sum insured information at the top
         intro_info_style = ParagraphStyle(
@@ -1195,8 +1273,8 @@ class PDFGeneratorService:
             fontName='Helvetica-Bold'
         )
         intro_info = f"<b>Line of Business:</b> {line_of_business}"
-        if total_sum_insured > 0:
-            intro_info += f" | <b>Total Sum Insured:</b> SAR {total_sum_insured:,.2f}"
+        if _total_sum_insured_value > 0:
+            intro_info += f" | <b>Total Sum Insured:</b> SAR {_total_sum_insured_value:,.2f}"
         story.append(Paragraph(intro_info, intro_info_style))
         story.append(Spacer(1, 0.15*inch))
         
@@ -1279,43 +1357,53 @@ class PDFGeneratorService:
                         return words[0]
                     return full_name[:15]  # Truncate if still long
                 
-                # Build subjectivities table with Y/N or check/cross
+                # Build subjectivities table with Y/N or check/cross (improved readability)
                 subj_list = sorted(list(all_subjectivities))[:10]  # Limit to top 10
                 # Use short names for header
                 provider_short_names = [get_short_name(p.get("name", "Provider")) for p in providers_data[:5]]
-                header_row = [Paragraph("Subjectivity", ParagraphStyle('SubjHeader', parent=self.styles['CustomBodyText'], fontSize=8, fontName='Helvetica-Bold'))] + [Paragraph(name, ParagraphStyle('SubjHeader', parent=self.styles['CustomBodyText'], fontSize=8, fontName='Helvetica-Bold')) for name in provider_short_names]
+                # Improved header with better wrapping
+                header_cell_style = ParagraphStyle('SubjHeader', parent=self.styles['CustomBodyText'], fontSize=8, fontName='Helvetica-Bold', wordWrap='LTR', leading=10)
+                header_row = [Paragraph("Subjectivity", header_cell_style)] + [Paragraph(name, header_cell_style) for name in provider_short_names]
                 subj_table_data = [header_row]
                 
+                # Improved cell style for better text wrapping
+                subj_cell_style = ParagraphStyle('SubjCell', parent=self.styles['CustomBodyText'], fontSize=7, wordWrap='LTR', leading=9, leftIndent=0, rightIndent=0)
+                check_cell_style = ParagraphStyle('SubjCheck', parent=self.styles['CustomBodyText'], fontSize=9, alignment=TA_CENTER)
+                
                 for subj in subj_list:
-                    # Wrap subjectivity text properly
-                    subj_text = subj[:50] + "..." if len(subj) > 50 else subj
-                    row = [Paragraph(subj_text, 
-                                   ParagraphStyle('SubjCell', parent=self.styles['CustomBodyText'], fontSize=7, wordWrap='LTR'))]
+                    # Use full text with proper wrapping instead of truncation
+                    row = [Paragraph(subj, subj_cell_style)]
                     for provider in providers_data[:5]:
                         provider_name = provider.get("name", "Unknown")
                         has_subj = subj in provider_subj_map.get(provider_name, set())
-                        row.append(Paragraph("✓" if has_subj else "✗", ParagraphStyle('SubjCell', parent=self.styles['CustomBodyText'], fontSize=9, alignment=TA_CENTER)))
+                        row.append(Paragraph("✓" if has_subj else "✗", check_cell_style))
                     subj_table_data.append(row)
                 
                 if len(subj_table_data) > 1:
                     available_width = self.page_width - 1.5*inch
                     num_providers = len(subj_table_data[0]) - 1
-                    col_widths = [available_width * 0.45] + [available_width * 0.55 / num_providers] * num_providers
+                    # Allocate more width to subjectivity column for better readability
+                    subj_col_width = available_width * 0.50
+                    provider_col_width = (available_width - subj_col_width) / num_providers
+                    col_widths = [subj_col_width] + [provider_col_width] * num_providers
                     
-                    subj_table = Table(subj_table_data, colWidths=col_widths)
+                    subj_table = Table(subj_table_data, colWidths=col_widths, repeatRows=0)
                     subj_table.setStyle(TableStyle([
                         ('BACKGROUND', (0, 0), (-1, 0), HexColor('#4A7C2A')),
                         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
                         ('ALIGN', (0, 0), (0, -1), 'LEFT'),
                         ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
-                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                        ('VALIGN', (0, 0), (-1, -1), 'TOP'),  # Top align for better readability with wrapped text
                         ('WORDWRAP', (0, 0), (-1, -1), True),
                         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                         ('FONTSIZE', (0, 0), (-1, 0), 8),
-                        ('FONTSIZE', (1, 0), (-1, -1), 8),
+                        ('FONTSIZE', (0, 1), (0, -1), 7),  # Subjectivity text smaller
+                        ('FONTSIZE', (1, 0), (-1, -1), 8),  # Header and checks normal size
                         ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                        ('TOPPADDING', (0, 0), (-1, -1), 6),
-                        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                        ('TOPPADDING', (0, 0), (-1, -1), 4),
+                        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+                        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
                         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#F5F5F5')]),
                     ]))
                     story.append(subj_table)
@@ -1508,10 +1596,53 @@ class PDFGeneratorService:
         recommendation_reasoning = key_differences.get("recommendation_reasoning", "")
         
         if recommendation and recommendation_reasoning:
-            # Remove any sum insured/coverage limit mentions from reasoning
+            # Remove any sum insured/coverage limit mentions from reasoning (comprehensive removal)
             clean_reasoning = recommendation_reasoning
-            clean_reasoning = re.sub(r'\b(sum insured|Sum Insured|coverage limit|Coverage Limit|substantial coverage)\b[^.]*\.?', '', clean_reasoning, flags=re.IGNORECASE)
+            
+            # CRITICAL FIX: Clarify premium comparisons - fix confusing sentence structure
+            # Fix pattern: "and a [low/competitive] rate of X, significantly lower than Provider's SAR Y"
+            # Replace with: "with a [low/competitive] rate of X, compared to Provider's premium of SAR Y"
+            def fix_premium_comparison_detailed(match):
+                rate_adj = match.group(2) + ' ' if match.group(2) else ''
+                rate_type = match.group(3)
+                rate_val = match.group(4)
+                provider = match.group(6)
+                premium_val = match.group(7)
+                return f"with {rate_adj}{rate_type} of {rate_val}, compared to {provider}'s premium of SAR {premium_val}"
+            
+            clean_reasoning = re.sub(
+                r'\band\s+(a|an)?\s*(low|high|competitive)?\s*(rate|premium)\s+of\s+([^,]+),\s+significantly\s+(lower|higher)\s+than\s+([A-Za-z\s\']+?)\'s\s+SAR\s+([\d,]+\.?\d*)',
+                fix_premium_comparison_detailed,
+                clean_reasoning,
+                flags=re.IGNORECASE
+            )
+            # More general fix: "significantly lower than Provider's SAR X" -> "compared to Provider's premium of SAR X"
+            clean_reasoning = re.sub(
+                r'\b(significantly|substantially)\s+(lower|higher)\s+than\s+([A-Za-z\s\']+?)\'s\s+SAR\s+([\d,]+\.?\d*)',
+                r'compared to \3\'s premium of SAR \4',
+                clean_reasoning,
+                flags=re.IGNORECASE
+            )
+            # Fix: "Provider's SAR X" -> "Provider's premium of SAR X" (when not already "premium of")
+            clean_reasoning = re.sub(
+                r'\b([A-Za-z\s\']+?)\'s\s+(?!premium\s+of\s+SAR)SAR\s+([\d,]+\.?\d*)(?=\s|\.|,|$)',
+                r'\1\'s premium of SAR \2',
+                clean_reasoning,
+                flags=re.IGNORECASE
+            )
+            
+            # Remove explicit sum insured and coverage limit mentions
+            clean_reasoning = re.sub(r'\b(sum insured|Sum Insured|coverage limit|Coverage Limit|substantial coverage limit|total sum insured)\b[^.]*\.?', '', clean_reasoning, flags=re.IGNORECASE)
+            # Remove phrases with large numbers + billion/million (e.g., "offers a high 56 billion")
+            clean_reasoning = re.sub(r'\b(offers?|with|of|has)\s+(a|an)?\s*(high|total|maximum)?\s*[\d,]+\.?\d*\s*(billion|million)\b', '', clean_reasoning, flags=re.IGNORECASE)
+            # Remove standalone large numbers with billion/million (only very large numbers to avoid removing premiums)
+            clean_reasoning = re.sub(r'\b[\d,]{4,}\.?\d*\s*(billion|million)\b', '', clean_reasoning, flags=re.IGNORECASE)
+            # Remove SAR values with very large numbers (likely sum insured)
+            clean_reasoning = re.sub(r'\b(SAR|SR)\s*[\d,]{9,}\b', '', clean_reasoning, flags=re.IGNORECASE)
+            # Clean up whitespace and punctuation
             clean_reasoning = re.sub(r'\s+', ' ', clean_reasoning).strip()
+            clean_reasoning = re.sub(r'\s*,\s*,', ',', clean_reasoning)  # Remove double commas
+            clean_reasoning = re.sub(r'\s*\.\s*\.', '.', clean_reasoning)  # Remove double periods
             
             final_rec_text = f"""
             Based on comprehensive analysis of coverage quality, pricing competitiveness, policy terms, and 
@@ -2351,94 +2482,17 @@ class PDFGeneratorService:
         return story
     
     def _build_analytics_section(self, comparison_data: Dict[str, Any]) -> List:
-        """Build analytics/charts section with charts and statistics (NO HAKIM SCORE)."""
+        """Build analytics section with Overall Score Comparison only (removed duplicated tables per client requirement)."""
         story = []
         
-        title = Paragraph("Charts", self.styles['SectionHeading'])
+        title = Paragraph("Score Comparison", self.styles['SectionHeading'])
         story.append(title)
         story.append(Spacer(1, 0.15*inch))
         
-        analytics = comparison_data.get("analytics", {})
         summary = comparison_data.get("summary", {})
         ranking = summary.get("ranking", []) if summary else []
         
-        # Statistics (NO HAKIM SCORE)
-        statistics = analytics.get("statistics", {})
-        if statistics:
-            story.append(Paragraph("Summary Statistics", self.styles['SubsectionHeading']))
-            
-            stats_data = []
-            if statistics.get("average_score"):
-                stats_data.append(["Average Score:", f"{statistics.get('average_score', 0):.1f}%"])  # Direct % symbol
-            if statistics.get("best_score"):
-                stats_data.append(["Best Score:", f"{statistics.get('best_score', 0):.1f}%"])  # Direct % symbol
-            if statistics.get("average_premium"):
-                stats_data.append(["Average Premium (SAR):", f"{statistics.get('average_premium', 0):,.2f}"])
-            if statistics.get("lowest_premium"):
-                stats_data.append(["Lowest Premium (SAR):", f"{statistics.get('lowest_premium', 0):,.2f}"])
-            if statistics.get("highest_premium"):
-                stats_data.append(["Highest Premium (SAR):", f"{statistics.get('highest_premium', 0):,.2f}"])
-            
-            if stats_data:
-                available_width = self.page_width - 1.8*inch
-                stats_table = Table(stats_data, colWidths=[available_width * 0.4, available_width * 0.6])
-                stats_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, -1), HexColor('#E8F5E9')),
-                    ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-                    ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-                    ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 9),
-                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                    ('TOPPADDING', (0, 0), (-1, -1), 6),
-                ]))
-                story.append(stats_table)
-                story.append(Spacer(1, 0.2*inch))
-        
-        # Generate Premium Comparison Chart (CRITICAL FIX: Sort by premium, not rank!)
-        if ranking:
-            story.append(Paragraph("Premium Comparison (Lowest to Highest)", self.styles['SubsectionHeading']))
-            story.append(Spacer(1, 0.1*inch))
-            
-            # CRITICAL FIX: Sort by premium amount, NOT by overall rank
-            # This is a "Premium Comparison", so it must be sorted by premium!
-            sorted_by_premium = sorted(ranking, key=lambda x: x.get("premium", float('inf')))[:10]
-            
-            # Create premium comparison table with premium-based ranking
-            table_data = [["Provider", "Premium (SAR)", "Premium Rank"]]
-            for premium_rank, item in enumerate(sorted_by_premium, 1):
-                if isinstance(item, dict):
-                    provider = item.get("company", "N/A")
-                    premium = item.get("premium", 0)
-                    # CRITICAL FIX: Wrap provider name in Paragraph
-                    provider_paragraph = Paragraph(provider, self.styles['CustomBodyText'])
-                    # Premium rank is based on actual premium order (1 = lowest)
-                    table_data.append([provider_paragraph, f"{premium:,.2f}", str(premium_rank)])
-            
-            if len(table_data) > 1:
-                available_width = self.page_width - 1.8*inch
-                chart_table = Table(table_data, colWidths=[available_width * 0.4, available_width * 0.4, available_width * 0.2])
-                chart_style = [
-                    ('BACKGROUND', (0, 0), (-1, 0), HexColor('#6B9F3D')),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (0, 0), (0, -1), 'LEFT'),  # Provider column left-aligned
-                    ('ALIGN', (1, 0), (-1, -1), 'CENTER'),  # Other columns center
-                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                    ('WORDWRAP', (0, 0), (-1, -1), True),  # CRITICAL FIX: Enable word wrap
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 8),
-                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
-                    ('TOPPADDING', (0, 0), (-1, 0), 6),
-                ]
-                if len(table_data) > 2:
-                    chart_style.append(('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, HexColor('#F5F5F5')]))
-                chart_table.setStyle(TableStyle(chart_style))
-                story.append(chart_table)
-                story.append(Spacer(1, 0.2*inch))
-        
-        # Overall Score Comparison (NO HAKIM SCORE)
+        # Overall Score Comparison (only table kept per client requirement)
         if ranking:
             story.append(Paragraph("Overall Score Comparison", self.styles['SubsectionHeading']))
             story.append(Spacer(1, 0.1*inch))
