@@ -11134,3 +11134,164 @@ UnboundLocalError: cannot access local variable 'rows' where it is not associate
 2025-12-29 23:11:05,324 - main - INFO -   ✅ Application stopped successfully
 2025-12-29 23:11:05,324 - main - INFO - ================================================================================
 2025-12-29 23:11:05,324 - main - INFO - 
+2025-12-29 23:11:09,210 - main - INFO - 🔒 CORS enabled for origins: ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:8080', 'https://www.hakem.ai', 'https://hakem.ai']
+2025-12-29 23:11:09,239 - main - INFO - 
+2025-12-29 23:11:09,239 - main - INFO - ================================================================================
+2025-12-29 23:11:09,239 - main - INFO -   INSURANCE QUOTE COMPARISON API v3.1
+2025-12-29 23:11:09,239 - main - INFO -   Production-Ready Complete Integration
+2025-12-29 23:11:09,240 - main - INFO - ================================================================================
+2025-12-29 23:11:09,240 - main - INFO -   AI Model: gpt-4o-mini
+2025-12-29 23:11:09,240 - main - INFO -   Upload Directory: uploads
+2025-12-29 23:11:09,240 - main - INFO -   Max File Size: 20MB
+2025-12-29 23:11:09,241 - main - INFO - ================================================================================
+2025-12-29 23:11:09,241 - main - INFO -   ✅ Upload directory ready: uploads
+2025-12-29 23:11:09,241 - main - INFO -   ✅ Logs directory ready: logs/
+2025-12-29 23:11:09,242 - app.services.mongodb_service_enhanced - INFO - 🔌 Connecting to MongoDB: mongodb://localhost:27017/hakemAI
+2025-12-29 23:11:09,272 - app.services.mongodb_service_enhanced - INFO - ✅ Successfully connected to MongoDB
+2025-12-29 23:11:09,276 - app.services.mongodb_service_enhanced - INFO - ✅ Database indexes created successfully
+2025-12-29 23:11:09,277 - main - INFO -   ✅ Enhanced MongoDB connected: mongodb://localhost:27017
+2025-12-29 23:11:09,277 - app.services.user_subscription_service - INFO - 🔌 Connecting to MongoDB for user subscription checks
+2025-12-29 23:11:09,277 - app.services.user_subscription_service - INFO -    URL: mongodb://localhost:...alhost:27017/hakemAI
+2025-12-29 23:11:09,278 - app.services.user_subscription_service - INFO -    Database: hakemAI
+2025-12-29 23:11:09,297 - app.services.user_subscription_service - INFO - ✅ Successfully connected to MongoDB for user subscription checks
+2025-12-29 23:11:09,299 - app.services.user_subscription_service - INFO - 📋 Available databases: ['admin', 'cms', 'cms_database', 'config', 'hakemAI', 'insurance_comparison', 'local']
+2025-12-29 23:11:09,300 - app.services.user_subscription_service - INFO - 📋 Collections in 'hakemAI': ['companyusers', 'user_documents', 'companies', 'hakim_scores', 'comparisons', 'users', 'individual_pdf_extractions', 'admins', 'activity_logs']
+2025-12-29 23:11:09,303 - app.services.user_subscription_service - INFO - 📊 Users collection has 5 documents
+2025-12-29 23:11:09,303 - main - INFO -   ✅ User Subscription Service connected
+2025-12-29 23:11:09,303 - app.services.user_documents_service - INFO - 🔌 Connecting User Documents Service to MongoDB
+2025-12-29 23:11:09,304 - app.services.user_documents_service - INFO -    URL: mongodb://localhost:27017/hakemAI
+2025-12-29 23:11:09,304 - app.services.user_documents_service - INFO -    Database: hakemAI
+2025-12-29 23:11:09,333 - app.services.user_documents_service - INFO - ✅ User Documents Service connected to MongoDB
+2025-12-29 23:11:09,333 - main - INFO -   ✅ User Documents Service connected
+2025-12-29 23:11:09,333 - app.services.hakim_score_service - INFO - 🔌 Connecting Hakim Score Service to MongoDB: mongodb://localhost:27017
+2025-12-29 23:11:09,341 - app.services.hakim_score_service - INFO - ✅ Hakim Score Service connected to MongoDB
+2025-12-29 23:11:09,349 - app.services.hakim_score_service - INFO - ✅ Hakim Score indexes created successfully
+2025-12-29 23:11:09,349 - main - INFO -   ✅ Hakim Score Service connected
+2025-12-29 23:11:09,349 - app.services.activity_logs_service - INFO - 🔌 Activity Logs Service: Connecting to MongoDB
+2025-12-29 23:11:09,358 - app.services.activity_logs_service - INFO - ✅ Activity Logs Service: Successfully connected to MongoDB
+2025-12-29 23:11:09,365 - app.services.activity_logs_service - INFO - ✅ Activity Logs Service: Indexes created successfully
+2025-12-29 23:11:09,365 - main - INFO -   ✅ Activity Logs Service connected
+2025-12-29 23:11:09,366 - main - INFO -   ✅ Progress tracker cleanup task started
+2025-12-29 23:11:09,366 - main - INFO - 
+2025-12-29 23:11:09,366 - main - INFO -   🎯 INTEGRATED COMPONENTS:
+2025-12-29 23:11:09,366 - main - INFO -      • AI Parser v6.0: 6-stage comprehensive extraction
+2025-12-29 23:11:09,366 - main - INFO -        - Proper entity identification (insurer vs insured)
+2025-12-29 23:11:09,367 - main - INFO -        - Separates warranties from extensions
+2025-12-29 23:11:09,367 - main - INFO -        - Extracts subjectivities & operational details
+2025-12-29 23:11:09,367 - main - INFO -        - Correct deductible tier detection
+2025-12-29 23:11:09,367 - main - INFO -        - Full benefits extraction (30+, not 4)
+2025-12-29 23:11:09,368 - main - INFO - 
+2025-12-29 23:11:09,368 - main - INFO -      • AI Ranker v2.0: Complete comparison engine
+2025-12-29 23:11:09,368 - main - INFO -        - Generates ALL sections comprehensively
+2025-12-29 23:11:09,368 - main - INFO -        - Identifies unique items per provider
+2025-12-29 23:11:09,369 - main - INFO -        - Transparent scoring methodology
+2025-12-29 23:11:09,369 - main - INFO -        - Uses full _extended_data from parser
+2025-12-29 23:11:09,369 - main - INFO - 
+2025-12-29 23:11:09,369 - main - INFO -      • Routes v3.1: Simplified orchestration
+2025-12-29 23:11:09,369 - main - INFO -        - Single endpoint auto-populates everything
+2025-12-29 23:11:09,370 - main - INFO -        - No manual section generation
+2025-12-29 23:11:09,370 - main - INFO -        - Complete MongoDB integration
+2025-12-29 23:11:09,370 - main - INFO - 
+2025-12-29 23:11:09,370 - main - INFO -   🔧 CRITICAL FIXES IN v3.1:
+2025-12-29 23:11:09,370 - main - INFO -      ✅ Benefits count: 30+ (was 4)
+2025-12-29 23:11:09,371 - main - INFO -      ✅ Warranty categorization: Proper separation
+2025-12-29 23:11:09,371 - main - INFO -      ✅ Subjectivities: Now included
+2025-12-29 23:11:09,371 - main - INFO -      ✅ Deductibles: Correct tier (SR 1M, not SR 50K)
+2025-12-29 23:11:09,371 - main - INFO -      ✅ Operational details: Validity, payment, brokerage
+2025-12-29 23:11:09,371 - main - INFO -      ✅ Scoring: Transparent methodology with breakdown
+2025-12-29 23:11:09,372 - main - INFO - 
+2025-12-29 23:11:09,372 - main - INFO -   📡 AVAILABLE ENDPOINTS:
+2025-12-29 23:11:09,372 - main - INFO -      Main:
+2025-12-29 23:11:09,372 - main - INFO -        POST /api/compare-quotes           Upload PDFs, get everything
+2025-12-29 23:11:09,372 - main - INFO - 
+2025-12-29 23:11:09,373 - main - INFO -      Retrieval:
+2025-12-29 23:11:09,373 - main - INFO -        GET  /api/comparisons/{id}         Complete comparison
+2025-12-29 23:11:09,373 - main - INFO -        POST /api/summary                  Rankings & analysis
+2025-12-29 23:11:09,373 - main - INFO -        POST /api/key-differences          Unique items per provider
+2025-12-29 23:11:09,373 - main - INFO -        POST /api/side-by-side             Top providers comparison
+2025-12-29 23:11:09,373 - main - INFO -        POST /api/data-table               Sortable data grid
+2025-12-29 23:11:09,374 - main - INFO -        POST /api/analytics                Charts & statistics
+2025-12-29 23:11:09,374 - main - INFO -        POST /api/provider-cards           UI-ready summaries
+2025-12-29 23:11:09,374 - main - INFO - 
+2025-12-29 23:11:09,374 - main - INFO -      Management:
+2025-12-29 23:11:09,374 - main - INFO -        GET  /api/comparisons/recent       Recent comparisons
+2025-12-29 23:11:09,374 - main - INFO -        GET  /api/comparisons/search       Search by provider
+2025-12-29 23:11:09,374 - main - INFO -        DELETE /api/comparisons/{id}       Delete comparison
+2025-12-29 23:11:09,375 - main - INFO - 
+2025-12-29 23:11:09,375 - main - INFO -      Documents (MongoDB):
+2025-12-29 23:11:09,375 - main - INFO -        GET  /api/documents                All documents
+2025-12-29 23:11:09,375 - main - INFO -        GET  /api/documents/{id}           Specific document
+2025-12-29 23:11:09,375 - main - INFO -        GET  /api/documents/search/{q}     Search documents
+2025-12-29 23:11:09,375 - main - INFO -        DELETE /api/documents/{id}         Delete document
+2025-12-29 23:11:09,376 - main - INFO - 
+2025-12-29 23:11:09,376 - main - INFO -      Diagnostics & Health:
+2025-12-29 23:11:09,376 - main - INFO -        GET  /api/health                   System health
+2025-12-29 23:11:09,377 - main - INFO -        GET  /api/status                   Detailed status
+2025-12-29 23:11:09,378 - main - INFO -        GET  /api/diagnostics/comparison/{id}  Comparison diagnostics
+2025-12-29 23:11:09,378 - main - INFO - 
+2025-12-29 23:11:09,379 - main - INFO -   📊 AUTO-GENERATED SECTIONS:
+2025-12-29 23:11:09,379 - main - INFO -      ✓ Summary with rankings & detailed analysis
+2025-12-29 23:11:09,379 - main - INFO -      ✓ Key Differences (unique warranties, exclusions)
+2025-12-29 23:11:09,379 - main - INFO -      ✓ Side-by-Side (top providers comparison matrix)
+2025-12-29 23:11:09,379 - main - INFO -      ✓ Data Table (sortable, filterable)
+2025-12-29 23:11:09,380 - main - INFO -      ✓ Analytics (premium charts, score charts, features)
+2025-12-29 23:11:09,380 - main - INFO -      ✓ Provider Cards (UI-ready summaries)
+2025-12-29 23:11:09,380 - main - INFO -      ✓ Extracted Quotes (full data with all benefits)
+2025-12-29 23:11:09,380 - main - INFO - 
+2025-12-29 23:11:09,380 - main - INFO -   🎯 WORKFLOW:
+2025-12-29 23:11:09,381 - main - INFO -      1. Upload 1-10 PDFs → POST /api/compare-quotes
+2025-12-29 23:11:09,381 - main - INFO -      2. Receive comparison_id + complete data
+2025-12-29 23:11:09,381 - main - INFO -      3. Retrieve sections using comparison_id
+2025-12-29 23:11:09,382 - main - INFO -      4. No re-upload needed!
+2025-12-29 23:11:09,382 - main - INFO - 
+2025-12-29 23:11:09,382 - main - INFO - ================================================================================
+2025-12-29 23:11:09,382 - main - INFO -   ✅ Application started successfully!
+2025-12-29 23:11:09,382 - main - INFO -   📚 API Docs: http://localhost:8000/docs
+2025-12-29 23:11:09,383 - main - INFO -   📖 ReDoc: http://localhost:8000/redoc
+2025-12-29 23:11:09,383 - main - INFO - ================================================================================
+2025-12-29 23:11:09,383 - main - INFO - 
+2025-12-29 23:11:09,383 - app.services.progress_tracker - INFO - 🔄 Starting progress cleanup task (interval: 300s)
+2025-12-29 23:11:12,392 - main - INFO - 📥 GET /api/comparisons
+2025-12-29 23:11:12,393 - app.api.routes - INFO - 📊 Fetching all comparisons for user: 694edeacc98c1096e3582e38
+2025-12-29 23:11:12,395 - app.services.mongodb_service_enhanced - INFO - 🔍 Query for comparisons: {'user_id': '694edeacc98c1096e3582e38'}
+2025-12-29 23:11:12,403 - app.services.mongodb_service_enhanced - INFO - 📊 Found 4 comparisons for user 694edeacc98c1096e3582e38 (company: None)
+2025-12-29 23:11:12,403 - app.api.routes - INFO - ✅ Found 4 comparisons for user 694edeacc98c1096e3582e38
+2025-12-29 23:11:12,408 - main - INFO - 📤 GET /api/comparisons - 200 - 0.02s
+2025-12-29 23:11:14,108 - main - INFO - 📥 GET /api/comparisons
+2025-12-29 23:11:14,111 - app.api.routes - INFO - 📊 Fetching all comparisons for user: 694edeacc98c1096e3582e38
+2025-12-29 23:11:14,115 - app.services.mongodb_service_enhanced - INFO - 🔍 Query for comparisons: {'user_id': '694edeacc98c1096e3582e38'}
+2025-12-29 23:11:14,130 - app.services.mongodb_service_enhanced - INFO - 📊 Found 4 comparisons for user 694edeacc98c1096e3582e38 (company: None)
+2025-12-29 23:11:14,133 - app.api.routes - INFO - ✅ Found 4 comparisons for user 694edeacc98c1096e3582e38
+2025-12-29 23:11:14,147 - main - INFO - 📤 GET /api/comparisons - 200 - 0.04s
+2025-12-29 23:11:14,161 - main - INFO - 📥 GET /api/comparisons
+2025-12-29 23:11:14,164 - app.api.routes - INFO - 📊 Fetching all comparisons for user: 694edeacc98c1096e3582e38
+2025-12-29 23:11:14,167 - app.services.mongodb_service_enhanced - INFO - 🔍 Query for comparisons: {'user_id': '694edeacc98c1096e3582e38'}
+2025-12-29 23:11:14,186 - app.services.mongodb_service_enhanced - INFO - 📊 Found 4 comparisons for user 694edeacc98c1096e3582e38 (company: None)
+2025-12-29 23:11:14,190 - app.api.routes - INFO - ✅ Found 4 comparisons for user 694edeacc98c1096e3582e38
+2025-12-29 23:11:14,206 - main - INFO - 📤 GET /api/comparisons - 200 - 0.04s
+2025-12-29 23:11:16,387 - main - INFO - 📥 GET /api/comparison/cmp_1767047917_c66baf45d7e7/pdf
+2025-12-29 23:11:16,387 - app.api.routes - INFO - 📄 Generating PDF for comparison: cmp_1767047917_c66baf45d7e7, type: both
+2025-12-29 23:11:16,389 - app.services.pdf_generator_service - INFO - 🔍 Generating 1-page strategic memo for: cmp_1767047917_c66baf45d7e7
+2025-12-29 23:11:16,390 - app.services.pdf_generator_service - INFO - ✅ Comparison data validated: summary=True, data_table=True, side_by_side=True
+2025-12-29 23:11:16,390 - app.services.pdf_generator_service - INFO - 📄 Building cover page for strategic memo...
+2025-12-29 23:11:16,391 - app.services.pdf_generator_service - INFO - ✅ Cover page built successfully
+2025-12-29 23:11:16,391 - app.services.pdf_generator_service - INFO - 📄 Building strategic executive memo (1-page brief)...
+2025-12-29 23:11:16,396 - app.services.pdf_generator_service - INFO - ✅ Strategic memo built successfully with 25 elements
+2025-12-29 23:11:16,503 - app.services.pdf_generator_service - INFO - ✅ Generated strategic memo PDF for comparison: cmp_1767047917_c66baf45d7e7
+2025-12-29 23:11:16,503 - app.services.pdf_generator_service - INFO - 🔍 Generating detailed comparison PDF for: cmp_1767047917_c66baf45d7e7
+2025-12-29 23:11:16,503 - app.services.pdf_generator_service - INFO - ✅ Comparison data validated: summary=True, data_table=True, side_by_side=True
+2025-12-29 23:11:16,504 - app.services.pdf_generator_service - INFO - 📄 Building cover page for detailed comparison...
+2025-12-29 23:11:16,504 - app.services.pdf_generator_service - INFO - ✅ Cover page built successfully
+2025-12-29 23:11:16,505 - app.services.pdf_generator_service - INFO - 📄 Building detailed comparison factors...
+2025-12-29 23:11:16,513 - app.services.pdf_generator_service - INFO - ✅ Detailed comparison factors built successfully
+2025-12-29 23:11:16,514 - app.services.pdf_generator_service - INFO - 📄 Building analytics section (overall score comparison only)...
+2025-12-29 23:11:16,514 - app.services.pdf_generator_service - INFO - ✅ Analytics section built successfully
+2025-12-29 23:11:16,647 - app.services.pdf_generator_service - INFO - ✅ Generated detailed comparison PDF for comparison: cmp_1767047917_c66baf45d7e7
+2025-12-29 23:11:16,649 - app.api.routes - INFO - ✅ Both PDFs generated: Strategic_Memo_cmp_1767047917_c66baf45d7e7_20251229_231116.pdf (129221 bytes), HAKEM_AI_Detailed_Technical_Comparison_cmp_1767047917_c66baf45d7e7_20251229_231116.pdf (139437 bytes)
+2025-12-29 23:11:16,651 - main - INFO - 📤 GET /api/comparison/cmp_1767047917_c66baf45d7e7/pdf - 200 - 0.26s
+2025-12-29 23:11:45,188 - main - INFO - 📥 GET /api/comparisons
+2025-12-29 23:11:45,189 - app.api.routes - INFO - 📊 Fetching all comparisons for user: 694edeacc98c1096e3582e38
+2025-12-29 23:11:45,190 - app.services.mongodb_service_enhanced - INFO - 🔍 Query for comparisons: {'user_id': '694edeacc98c1096e3582e38'}
+2025-12-29 23:11:45,196 - app.services.mongodb_service_enhanced - INFO - 📊 Found 4 comparisons for user 694edeacc98c1096e3582e38 (company: None)
+2025-12-29 23:11:45,197 - app.api.routes - INFO - ✅ Found 4 comparisons for user 694edeacc98c1096e3582e38
+2025-12-29 23:11:45,204 - main - INFO - 📤 GET /api/comparisons - 200 - 0.02s
