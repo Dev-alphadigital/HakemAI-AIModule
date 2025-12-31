@@ -1,0 +1,102 @@
+# ============================================================================
+# CORE FRAMEWORK - FastAPI and ASGI Server
+# ============================================================================
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+gunicorn==21.2.0
+python-multipart==0.0.12
+
+# ============================================================================
+# PDF PROCESSING - Extract and Generate PDFs
+# ============================================================================
+PyMuPDF==1.24.14
+reportlab==4.2.5
+
+# ============================================================================
+# AI & LLM APIs - OpenAI Integration
+# ============================================================================
+openai==1.54.5
+httpx==0.27.2
+httpcore==1.0.6
+
+# ============================================================================
+# CONFIGURATION - Environment Variables
+# ============================================================================
+python-dotenv==1.0.1
+
+# ============================================================================
+# DATA VALIDATION - Pydantic V2
+# ============================================================================
+pydantic==2.9.2
+pydantic-settings==2.6.1
+pydantic-core==2.23.4
+annotated-types==0.7.0
+
+# ============================================================================
+# DATABASE - MongoDB Support (Sync & Async)
+# ============================================================================
+pymongo==4.9.1
+motor==3.6.0
+dnspython==2.6.1
+
+# ============================================================================
+# WEB SCRAPING - Logo Fetching & Data Extraction
+# ============================================================================
+requests==2.32.3
+beautifulsoup4==4.12.3
+lxml==5.3.0
+soupsieve==2.5
+
+# ============================================================================
+# IMAGE PROCESSING - Logo & Graphics Handling
+# ============================================================================
+Pillow==10.4.0
+
+# ============================================================================
+# UTILITIES & DEPENDENCIES
+# ============================================================================
+# Date/time utilities
+python-dateutil==2.9.0.post0
+
+# Type checking extensions
+typing-extensions==4.12.2
+
+# Character encoding detection
+charset-normalizer==3.3.2
+
+# URL parsing
+idna==3.7
+
+# SSL/TLS support
+certifi==2024.7.4
+
+# ============================================================================
+# PRODUCTION SERVER & MONITORING (for DigitalOcean)
+# ============================================================================
+# Process management
+supervisor==4.2.5
+
+# Health checks and monitoring
+psutil==6.0.0
+
+# Logging
+python-json-logger==2.0.7
+
+# ============================================================================
+# OPTIONAL: OCR Support (Uncomment if needed for scanned PDFs)
+# ============================================================================
+# pytesseract==0.3.10
+# Pillow is already included above for OCR support
+
+# ============================================================================
+# OPTIONAL: Anthropic Claude API (Uncomment if switching from OpenAI)
+# ============================================================================
+# anthropic==0.39.0
+
+# ============================================================================
+# SECURITY & PERFORMANCE (Production Recommendations)
+# ============================================================================
+# CORS and security headers (already included in FastAPI)
+# Consider adding:
+# python-jose[cryptography]==3.3.0  # For JWT tokens if implementing auth
+# passlib[bcrypt]==1.7.4  # For password hashing if implementing user auth
