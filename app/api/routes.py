@@ -1996,6 +1996,24 @@ async def get_activity_statistics(
         - activitiesByDay
     """
     try:
+        # Ensure activity logs service is connected
+        if activity_logs_service.activity_logs_collection is None:
+            logger.warning("⚠️  Activity logs collection not initialized, attempting to connect...")
+            try:
+                await activity_logs_service.connect()
+                logger.info("✅ Activity logs service connected successfully")
+            except Exception as connect_error:
+                logger.error(f"❌ Failed to connect activity logs service: {connect_error}")
+                # Return empty statistics instead of failing
+                return JSONResponse(content={
+                    "totalActivities": 0,
+                    "activitiesByType": {},
+                    "topUsers": [],
+                    "activitiesByDay": []
+                })
+        else:
+            logger.info("✅ Activity logs service already connected")
+        
         # Parse dates if provided
         start_date = None
         end_date = None
