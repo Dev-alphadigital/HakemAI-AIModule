@@ -1443,6 +1443,123 @@ async def get_all_hakim_scores(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# IMPORTANT: Specific routes must come BEFORE parameterized routes
+# to avoid route conflicts (e.g., "bulk-update" matching {company_name})
+
+@router.put("/admin/hakim-scores/bulk-update")
+async def bulk_update_scores_only(updates: HakimScoreBulkUpdateRequest):
+    """
+    Bulk update only scores (optimized for scoring page).
+    Tier is automatically determined from score for each company.
+    More efficient when only scores need to be updated.
+    Supports setting scores to 0.0 to disable companies.
+    
+    Args:
+        updates: List of updates with company_name and score
+                Format: {"updates": [{"company_name": "GIG", "score": 0.88}, ...]}
+        
+    Returns:
+        Bulk update results with auto-determined tiers
+    """
+    try:
+        # Convert Pydantic models to dicts
+        updates_list = [
+            {
+                "company_name": item.company_name,
+                "score": item.score
+            }
+            for item in updates.updates
+        ]
+        
+        result = await hakim_score_service.bulk_update_scores(updates_list)
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": f"Bulk update completed: {result['updated']} updated, {result['failed']} failed",
+                "summary": {
+                    "updated": result['updated'],
+                    "failed": result['failed'],
+                    "total": result['total']
+                },
+                "results": result.get('results', [])
+            }
+        )
+    except Exception as e:
+        logger.error(f"❌ Error in bulk update: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/hakim-scores/bulk")
+async def bulk_create_or_update_hakim_scores(scores: List[HakimScoreRequest]):
+    """
+    Bulk create or update multiple Hakim scores (Admin endpoint).
+    Supports setting scores to 0.0 to disable companies.
+    
+    Args:
+        scores: List of Hakim score data
+        
+    Returns:
+        Bulk operation results with detailed status for each company
+    """
+    try:
+        scores_data = [
+            {
+                "company_name": s.company_name,
+                "score": s.score,
+                "tier": s.tier,
+                "rank": s.rank,
+                "aliases": s.aliases
+            }
+            for s in scores
+        ]
+        
+        result = await hakim_score_service.bulk_create_or_update(scores_data)
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": f"Bulk operation completed: {result['created']} created, {result['updated']} updated, {result['failed']} failed",
+                "summary": {
+                    "created": result['created'],
+                    "updated": result['updated'],
+                    "failed": result['failed'],
+                    "total": result['total']
+                },
+                "results": result.get('results', [])
+            }
+        )
+    except Exception as e:
+        logger.error(f"❌ Error in bulk operation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/admin/hakim-scores/search/{query}")
+async def search_hakim_scores(query: str):
+    """
+    Search companies by name or alias (Admin endpoint).
+    
+    Args:
+        query: Search query
+        
+    Returns:
+        List of matching companies
+    """
+    try:
+        results = await hakim_score_service.search_companies(query)
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "count": len(results),
+                "results": results
+            }
+        )
+    except Exception as e:
+        logger.error(f"❌ Error searching Hakim scores: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/admin/hakim-scores/{company_name}")
 async def get_hakim_score(company_name: str):
     """
@@ -1657,120 +1774,6 @@ async def set_score_to_zero(company_name: str):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"❌ Error setting score to zero: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/admin/hakim-scores/bulk")
-async def bulk_create_or_update_hakim_scores(scores: List[HakimScoreRequest]):
-    """
-    Bulk create or update multiple Hakim scores (Admin endpoint).
-    Supports setting scores to 0.0 to disable companies.
-    
-    Args:
-        scores: List of Hakim score data
-        
-    Returns:
-        Bulk operation results with detailed status for each company
-    """
-    try:
-        scores_data = [
-            {
-                "company_name": s.company_name,
-                "score": s.score,
-                "tier": s.tier,
-                "rank": s.rank,
-                "aliases": s.aliases
-            }
-            for s in scores
-        ]
-        
-        result = await hakim_score_service.bulk_create_or_update(scores_data)
-        
-        return JSONResponse(
-            content={
-                "success": True,
-                "message": f"Bulk operation completed: {result['created']} created, {result['updated']} updated, {result['failed']} failed",
-                "summary": {
-                    "created": result['created'],
-                    "updated": result['updated'],
-                    "failed": result['failed'],
-                    "total": result['total']
-                },
-                "results": result.get('results', [])
-            }
-        )
-    except Exception as e:
-        logger.error(f"❌ Error in bulk operation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.put("/admin/hakim-scores/bulk-update")
-async def bulk_update_scores_only(updates: HakimScoreBulkUpdateRequest):
-    """
-    Bulk update only scores (optimized for scoring page).
-    Tier is automatically determined from score for each company.
-    More efficient when only scores need to be updated.
-    Supports setting scores to 0.0 to disable companies.
-    
-    Args:
-        updates: List of updates with company_name and score
-                Format: {"updates": [{"company_name": "GIG", "score": 0.88}, ...]}
-        
-    Returns:
-        Bulk update results with auto-determined tiers
-    """
-    try:
-        # Convert Pydantic models to dicts
-        updates_list = [
-            {
-                "company_name": item.company_name,
-                "score": item.score
-            }
-            for item in updates.updates
-        ]
-        
-        result = await hakim_score_service.bulk_update_scores(updates_list)
-        
-        return JSONResponse(
-            content={
-                "success": True,
-                "message": f"Bulk update completed: {result['updated']} updated, {result['failed']} failed",
-                "summary": {
-                    "updated": result['updated'],
-                    "failed": result['failed'],
-                    "total": result['total']
-                },
-                "results": result.get('results', [])
-            }
-        )
-    except Exception as e:
-        logger.error(f"❌ Error in bulk update: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/admin/hakim-scores/search/{query}")
-async def search_hakim_scores(query: str):
-    """
-    Search companies by name or alias (Admin endpoint).
-    
-    Args:
-        query: Search query
-        
-    Returns:
-        List of matching companies
-    """
-    try:
-        results = await hakim_score_service.search_companies(query)
-        
-        return JSONResponse(
-            content={
-                "success": True,
-                "count": len(results),
-                "results": results
-            }
-        )
-    except Exception as e:
-        logger.error(f"❌ Error searching Hakim scores: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

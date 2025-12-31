@@ -77,9 +77,8 @@ class HakimScoreService:
     async def connect(self):
         """Connect to MongoDB and initialize collection"""
         try:
-            # Use MONGO_URI first (same as NestJS backend), then MONGODB_URL, then localhost
-            mongodb_url = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-            database_name = os.getenv("MONGODB_DATABASE") or os.getenv("MONGO_DB_NAME", "hakemAI")
+            mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+            database_name = os.getenv("MONGODB_DATABASE", "hakemAI")
             
             logger.info(f"🔌 Connecting Hakim Score Service to MongoDB: {mongodb_url}")
             

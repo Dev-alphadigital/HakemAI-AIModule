@@ -167,14 +167,27 @@ class ActivityLogsService:
             Dict with logs, total, page, totalPages
         """
         try:
+            # First, check total documents in collection (for debugging)
+            total_in_collection = await self.activity_logs_collection.count_documents({})
+            logger.info(f"📊 Total activity logs in collection: {total_in_collection}")
+            
             # Build query
             query = {}
             
             if user_id:
-                query["userId"] = user_id
+                # Convert string user_id to ObjectId for proper matching
+                try:
+                    from bson import ObjectId
+                    query["userId"] = ObjectId(user_id)
+                    logger.debug(f"🔍 Filtering by userId (ObjectId): {user_id}")
+                except Exception:
+                    # If conversion fails, try as string (for backward compatibility)
+                    query["userId"] = user_id
+                    logger.debug(f"🔍 Filtering by userId (string): {user_id}")
             
             if activity_type and activity_type.lower() != "all types":
                 query["activityType"] = activity_type
+                logger.debug(f"🔍 Filtering by activityType: {activity_type}")
             
             if start_date or end_date:
                 query["createdAt"] = {}
@@ -182,12 +195,23 @@ class ActivityLogsService:
                     query["createdAt"]["$gte"] = start_date
                 if end_date:
                     query["createdAt"]["$lte"] = end_date
+                logger.debug(f"🔍 Filtering by date range: {start_date} to {end_date}")
             
+            # Handle search - use regex instead of $text for more reliable searching
             if search:
-                query["$text"] = {"$search": search}
+                search_regex = {"$regex": search, "$options": "i"}
+                query["$or"] = [
+                    {"username": search_regex},
+                    {"userEmail": search_regex},
+                    {"description": search_regex}
+                ]
+                logger.debug(f"🔍 Searching for: {search}")
+            
+            logger.debug(f"🔍 Final query: {query}")
             
             # Get total count
             total = await self.activity_logs_collection.count_documents(query)
+            logger.info(f"📊 Activity logs matching query: {total}")
             
             # Calculate pagination
             skip = (page - 1) * limit
@@ -200,9 +224,14 @@ class ActivityLogsService:
             # Format logs
             formatted_logs = []
             for log in logs:
+                # Convert userId ObjectId to string if needed
+                user_id = log.get("userId", "")
+                if user_id and hasattr(user_id, '__str__'):
+                    user_id = str(user_id)
+                
                 formatted_logs.append({
                     "_id": str(log.get("_id", "")),
-                    "userId": log.get("userId", ""),
+                    "userId": user_id,
                     "userEmail": log.get("userEmail", ""),
                     "username": log.get("username", ""),
                     "activityType": log.get("activityType", ""),
@@ -212,6 +241,8 @@ class ActivityLogsService:
                     "createdAt": log.get("createdAt").isoformat() if log.get("createdAt") else None,
                     "metadata": log.get("metadata", {})
                 })
+            
+            logger.info(f"📊 Activity logs query result: {len(formatted_logs)} logs found (total: {total})")
             
             return {
                 "logs": formatted_logs,
@@ -263,6 +294,10 @@ class ActivityLogsService:
             Dict with statistics
         """
         try:
+            # Check if collection exists and has documents
+            if self.activity_logs_collection is None:
+                raise Exception("Activity logs collection is not initialized")
+            
             # Build date query
             date_query = {}
             if start_date or end_date:
@@ -276,41 +311,60 @@ class ActivityLogsService:
             total_activities = await self.activity_logs_collection.count_documents(date_query)
             
             # Activities by type
-            pipeline = []
-            if date_query:
-                pipeline.append({"$match": date_query})
-            pipeline.extend([
-                {"$group": {
-                    "_id": "$activityType",
-                    "count": {"$sum": 1}
-                }},
-                {"$sort": {"count": -1}}
-            ])
-            
-            activities_by_type = {}
-            async for doc in self.activity_logs_collection.aggregate(pipeline):
-                activities_by_type[doc["_id"]] = doc["count"]
+            try:
+                pipeline = []
+                if date_query:
+                    pipeline.append({"$match": date_query})
+                pipeline.extend([
+                    {"$group": {
+                        "_id": "$activityType",
+                        "count": {"$sum": 1}
+                    }},
+                    {"$sort": {"count": -1}}
+                ])
+                
+                activities_by_type = {}
+                async for doc in self.activity_logs_collection.aggregate(pipeline):
+                    activity_type = doc.get("_id") or "unknown"
+                    activities_by_type[activity_type] = doc.get("count", 0)
+            except Exception as type_error:
+                logger.warning(f"⚠️  Error getting activities by type: {type_error}")
+                activities_by_type = {}
             
             # Top users
-            pipeline = []
-            if date_query:
-                pipeline.append({"$match": date_query})
-            pipeline.extend([
-                {"$group": {
-                    "_id": {"userId": "$userId", "username": "$username"},
-                    "count": {"$sum": 1}
-                }},
-                {"$sort": {"count": -1}},
-                {"$limit": 10}
-            ])
-            
-            top_users = []
-            async for doc in self.activity_logs_collection.aggregate(pipeline):
-                top_users.append({
-                    "userId": doc["_id"].get("userId", ""),
-                    "username": doc["_id"].get("username", ""),
-                    "count": doc["count"]
-                })
+            try:
+                pipeline = []
+                if date_query:
+                    pipeline.append({"$match": date_query})
+                pipeline.extend([
+                    {"$group": {
+                        "_id": {"userId": "$userId", "username": "$username"},
+                        "count": {"$sum": 1}
+                    }},
+                    {"$sort": {"count": -1}},
+                    {"$limit": 10}
+                ])
+                
+                top_users = []
+                async for doc in self.activity_logs_collection.aggregate(pipeline):
+                    user_id_obj = doc.get("_id", {})
+                    # Convert userId ObjectId to string if needed
+                    user_id = user_id_obj.get("userId", "") if isinstance(user_id_obj, dict) else ""
+                    if user_id and hasattr(user_id, '__str__'):
+                        user_id = str(user_id)
+                    
+                    username = user_id_obj.get("username", "") if isinstance(user_id_obj, dict) else ""
+                    
+                    top_users.append({
+                        "userId": user_id,
+                        "username": username,
+                        "count": doc.get("count", 0)
+                    })
+            except Exception as user_error:
+                logger.warning(f"⚠️  Error getting top users: {user_error}")
+                import traceback
+                logger.error(traceback.format_exc())
+                top_users = []
             
             # Activities by day (last 30 days if no date range specified)
             if not start_date:
@@ -318,31 +372,67 @@ class ActivityLogsService:
             if not end_date:
                 end_date = datetime.utcnow()
             
-            pipeline = [
-                {"$match": {
-                    "createdAt": {
-                        "$gte": start_date,
-                        "$lte": end_date
-                    }
-                }},
-                {"$group": {
-                    "_id": {
-                        "$dateToString": {
-                            "format": "%Y-%m-%d",
-                            "date": "$createdAt"
+            # Build activities by day pipeline with better error handling
+            try:
+                # Try using $dateToString first (without timezone for compatibility)
+                pipeline = [
+                    {"$match": {
+                        "createdAt": {
+                            "$gte": start_date,
+                            "$lte": end_date
                         }
-                    },
-                    "count": {"$sum": 1}
-                }},
-                {"$sort": {"_id": 1}}
-            ]
+                    }},
+                    {"$group": {
+                        "_id": {
+                            "$dateToString": {
+                                "format": "%Y-%m-%d",
+                                "date": "$createdAt"
+                            }
+                        },
+                        "count": {"$sum": 1}
+                    }},
+                    {"$sort": {"_id": 1}}
+                ]
+                
+                activities_by_day = []
+                async for doc in self.activity_logs_collection.aggregate(pipeline):
+                    activities_by_day.append({
+                        "date": doc.get("_id", ""),
+                        "count": doc.get("count", 0)
+                    })
+            except Exception as day_error:
+                logger.warning(f"⚠️  Error getting activities by day with $dateToString, using fallback: {day_error}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Fallback: group by day manually if $dateToString fails
+                activities_by_day = []
+                try:
+                    cursor = self.activity_logs_collection.find({
+                        "createdAt": {
+                            "$gte": start_date,
+                            "$lte": end_date
+                        }
+                    })
+                    day_counts = defaultdict(int)
+                    async for doc in cursor:
+                        if "createdAt" in doc:
+                            created_at = doc["createdAt"]
+                            if isinstance(created_at, datetime):
+                                day_str = created_at.strftime("%Y-%m-%d")
+                            elif hasattr(created_at, 'date'):
+                                day_str = created_at.date().isoformat()
+                            else:
+                                # Try to parse as string
+                                day_str = str(created_at)[:10]
+                            day_counts[day_str] += 1
+                    
+                    for day, count in sorted(day_counts.items()):
+                        activities_by_day.append({"date": day, "count": count})
+                except Exception as fallback_error:
+                    logger.error(f"❌ Fallback method also failed: {fallback_error}")
+                    activities_by_day = []
             
-            activities_by_day = []
-            async for doc in self.activity_logs_collection.aggregate(pipeline):
-                activities_by_day.append({
-                    "date": doc["_id"],
-                    "count": doc["count"]
-                })
+            logger.info(f"📊 Statistics calculated: total={total_activities}, types={len(activities_by_type)}, top_users={len(top_users)}, days={len(activities_by_day)}")
             
             return {
                 "totalActivities": total_activities,
@@ -353,7 +443,15 @@ class ActivityLogsService:
             
         except Exception as e:
             logger.error(f"❌ Error getting activity statistics: {e}")
-            raise
+            import traceback
+            logger.error(traceback.format_exc())
+            # Return empty statistics instead of raising to prevent 500 error
+            return {
+                "totalActivities": 0,
+                "activitiesByType": {},
+                "topUsers": [],
+                "activitiesByDay": []
+            }
     
     async def get_recent_activity_logs(
         self,
