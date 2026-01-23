@@ -1140,6 +1140,44 @@ def _calculate_premium_from_rate(sum_insured: float, rate_string: str) -> Option
         return None
 
 
+def _detect_vat_inclusion(prem_info: Dict, total_annual_cost: Optional[float], 
+                          base_premium: Optional[float], vat_pct: float = 15.0) -> bool:
+    """
+    Detect if the extracted premium amount already includes VAT.
+    
+    Returns:
+        True if premium appears to include VAT, False if VAT-exclusive
+    """
+    # Check explicit indicators from AI extraction
+    premium_text = str(prem_info.get('base_premium_amount', '')).lower()
+    total_text = str(prem_info.get('total_including_vat', '')).lower()
+    
+    # Indicators that premium includes VAT
+    vat_inclusive_indicators = [
+        'including vat', 'incl. vat', 'vat included', 'with vat',
+        'including tax', 'incl. tax', 'tax included'
+    ]
+    
+    if any(indicator in premium_text for indicator in vat_inclusive_indicators):
+        return True
+    
+    # If we have both base premium and total, check if they match expected VAT calculation
+    if base_premium and total_annual_cost and base_premium > 0:
+        policy_fee = _parse_currency_amount(prem_info.get('policy_fee')) or 0
+        expected_total = base_premium + policy_fee + ((base_premium + policy_fee) * (vat_pct / 100))
+        
+        # If stated total is close to base premium (within 2%), likely VAT-inclusive
+        if abs(total_annual_cost - base_premium) / base_premium < 0.02:
+            return True
+        
+        # If stated total matches expected (within 1%), likely VAT-exclusive
+        if abs(total_annual_cost - expected_total) / expected_total < 0.01:
+            return False
+    
+    # Default: assume VAT-exclusive (safer - we can always add VAT)
+    return False
+
+
 def _parse_currency_amount(text: str) -> Optional[float]:
     """Parse any currency amount format."""
     if not text:
@@ -1666,12 +1704,35 @@ Return ONLY valid JSON."""
         vat_pct = _parse_currency_amount(prem_info.get('vat_percentage')) or 15.0
         policy_fee = _parse_currency_amount(prem_info.get('policy_fee')) or 0
         
+        # Detect if premium already includes VAT
+        vat_inclusive = False
         if final_premium:
-            vat_amount = (final_premium + policy_fee) * (vat_pct / 100)
-            total_annual_cost = final_premium + policy_fee + vat_amount
+            # Try to detect from extracted data
+            total_from_extraction = _parse_currency_amount(prem_info.get('total_including_vat'))
+            vat_inclusive = _detect_vat_inclusion(prem_info, total_from_extraction, final_premium, vat_pct)
+            
+            if vat_inclusive:
+                # Premium includes VAT - extract base premium by removing VAT
+                # Formula: base = total / (1 + vat_rate)
+                base_premium_before_vat = final_premium / (1 + (vat_pct / 100))
+                vat_amount = final_premium - base_premium_before_vat
+                # Recalculate with policy fee
+                base_premium_excl_vat = (final_premium - policy_fee) / (1 + (vat_pct / 100))
+                final_premium = base_premium_excl_vat  # Normalize to VAT-exclusive
+                vat_amount = (final_premium + policy_fee) * (vat_pct / 100)
+                total_annual_cost = final_premium + policy_fee + vat_amount
+                logger.info(f"🔄 Detected VAT-inclusive premium. Normalized to VAT-exclusive: {final_premium:.2f}")
+            else:
+                # Premium is VAT-exclusive (standard case)
+                vat_amount = (final_premium + policy_fee) * (vat_pct / 100)
+                total_annual_cost = final_premium + policy_fee + vat_amount
         else:
             vat_amount = _parse_currency_amount(prem_info.get('vat_amount'))
             total_annual_cost = _parse_currency_amount(prem_info.get('total_including_vat'))
+            # If we have total but no base premium, try to extract base
+            if total_annual_cost and not final_premium:
+                # Assume VAT-exclusive if we can't determine
+                final_premium = total_annual_cost - (vat_amount or 0) - policy_fee
         
         # CRITICAL FIX: Determine applicable deductible tier
         deductibles_data = raw_data.get('deductibles_complete', {})
@@ -1848,10 +1909,13 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
             "policy_type": raw_data.get('policy_type', ''),
             "policy_number": raw_data.get('policy_number', ''),
             
-            "premium_amount": final_premium,
+            "premium_amount": final_premium,  # Always VAT-exclusive after normalization
             "premium_frequency": prem_info.get('payment_terms', 'Annual'),
             "rate": rate_formatted,
             "total_annual_cost": total_annual_cost,
+            "premium_includes_vat": False,  # Always False after normalization
+            "vat_amount": vat_amount,
+            "vat_percentage": vat_pct,
             
             "score": analysis.get('overall_score', 75.0),
             "deductible": applicable_deductible_summary,

@@ -4,6 +4,7 @@ import logging
 import re
 from difflib import SequenceMatcher
 from app.models.quote_model import ExtractedQuoteData, SideBySideComparison, KeyDifference
+from app.services.ai_ranker import _get_normalized_premium_for_comparison as _get_normalized_premium
 
 logger = logging.getLogger(__name__)
 
@@ -149,14 +150,14 @@ class ComparisonService:
             
             sorted_quotes = sorted(
                 quotes_list,
-                key=lambda q: (-(q.score or 0), q.premium_amount or float('inf'))
+                key=lambda q: (-(q.score or 0), _get_normalized_premium(q) or float('inf'))
             )
             
             ranked = []
             for idx, quote in enumerate(sorted_quotes, 1):
                 if idx == 1 and (quote.score or 0) >= 85:
                     badge = "Recommended"
-                elif quote.premium_amount and quote.premium_amount == min(q.premium_amount or float('inf') for q in quotes_list):
+                elif _get_normalized_premium(quote) > 0 and _get_normalized_premium(quote) == min(_get_normalized_premium(q) or float('inf') for q in quotes_list):
                     badge = "Best Value"
                 elif (quote.score or 0) >= 80:
                     badge = "Good Option"
@@ -175,7 +176,7 @@ class ComparisonService:
                     "ia_compliant": ia_compliant,
                     "score": quote.score or 0,
                     "recommendation_badge": badge,
-                    "premium": quote.premium_amount or 0,
+                    "premium": _get_normalized_premium(quote),
                     "rate": quote.rate,
                     "annual_cost": quote.total_annual_cost or 0,
                     "policy_type": quote.policy_type,
@@ -218,8 +219,8 @@ class ComparisonService:
         elif score2 > score1:
             return quote2.company_name
         else:
-            premium1 = quote1.premium_amount or float('inf')
-            premium2 = quote2.premium_amount or float('inf')
+            premium1 = _get_normalized_premium(quote1) or float('inf')
+            premium2 = _get_normalized_premium(quote2) or float('inf')
             
             if premium1 < premium2:
                 return quote1.company_name

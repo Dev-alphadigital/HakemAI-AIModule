@@ -29,6 +29,9 @@ class ExtractedQuoteData(BaseModel):
     premium_frequency: Optional[str] = Field(None, description="monthly, annual, quarterly")
     rate: Optional[str] = Field(None, description="Rate description (e.g., '0.35‰')")
     total_annual_cost: Optional[float] = Field(None, description="Total annual cost with fees/VAT")
+    vat_amount: Optional[float] = Field(None, description="VAT amount (15% of premium + fees)")
+    vat_percentage: Optional[float] = Field(None, description="VAT percentage applied (default 15%)")
+    premium_includes_vat: Optional[bool] = Field(False, description="Whether original premium included VAT (always False after normalization)")
     
     # Coverage Details
     score: Optional[float] = Field(None, description="Overall quality score 0-100")

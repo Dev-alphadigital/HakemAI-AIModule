@@ -244,6 +244,29 @@ def _normalize_premium(premium_value: Any) -> float:
     return 0.0
 
 
+def _get_normalized_premium_for_comparison(quote: ExtractedQuoteData) -> float:
+    """
+    Get premium amount normalized to VAT-exclusive for fair comparison.
+    All premiums are stored as VAT-exclusive, so this just normalizes the value.
+    
+    Returns:
+        Premium amount (VAT-exclusive) for comparison purposes
+    """
+    premium = _normalize_premium(quote.premium_amount) or 0
+    
+    # If premium_amount is None/0 but total_annual_cost exists, 
+    # extract base premium (this shouldn't happen after parser fix, but safety check)
+    if premium == 0 and quote.total_annual_cost:
+        # Assume 15% VAT and try to extract base
+        total = _normalize_premium(quote.total_annual_cost)
+        if total > 0:
+            # Approximate: total = base * 1.15, so base = total / 1.15
+            premium = total / 1.15
+            logger.warning(f"⚠️ Extracted base premium from total for {quote.company_name}")
+    
+    return premium
+
+
 async def _get_hakim_score_from_db(company_name: str) -> Optional[Tuple[float, str, int]]:
     """
     Get Hakim Score from database with intelligent company name matching.
@@ -575,7 +598,7 @@ def _calculate_weighted_score(
     Uses proportional pricing penalties instead of harsh zero-scoring.
     Returns: (total_score, score_breakdown)
     """
-    premium = _normalize_premium(quote.premium_amount) or 0
+    premium = _get_normalized_premium_for_comparison(quote)
     rate_value = _extract_rate_value(quote.rate)
     benefits_count = len(quote.key_benefits or [])
     exclusions_count = len(quote.exclusions or [])
@@ -1480,7 +1503,7 @@ async def rank_and_compare_quotes(
     
     unique_items = _identify_unique_items(quotes)
     
-    all_premiums = [_normalize_premium(q.premium_amount) for q in quotes]
+    all_premiums = [_get_normalized_premium_for_comparison(q) for q in quotes]
     all_rates = [_extract_rate_value(q.rate) for q in quotes]
     all_benefits_counts = [len(q.key_benefits or []) for q in quotes]
     all_exclusions_counts = [len(q.exclusions or []) for q in quotes]
@@ -1632,7 +1655,7 @@ async def rank_and_compare_quotes(
                 'reputation_score': round(w_breakdown.get('provider_reputation', 0), 2),
                 'reputation_based_on': f"Hakim Score: {h_score:.1f}/100 ({h_tier}) - 30% weight"
             },
-            'premium': _normalize_premium(quote.premium_amount),
+            'premium': _get_normalized_premium_for_comparison(quote),
             'rate': quote.rate or 'N/A',
             'annual_cost': _normalize_premium(quote.total_annual_cost),
             'reason': f"Weighted score: {w_score:.2f}/100 (Hakim: {h_score:.1f} - {h_tier})",
@@ -1825,8 +1848,8 @@ async def _build_comprehensive_comparison(
     
     for i, quote1 in enumerate(quotes):
         for quote2 in quotes[i+1:]:
-            premium1 = _normalize_premium(quote1.premium_amount)
-            premium2 = _normalize_premium(quote2.premium_amount)
+            premium1 = _get_normalized_premium_for_comparison(quote1)
+            premium2 = _get_normalized_premium_for_comparison(quote2)
             
             if premium1 > 0 and premium2 > 0:
                 diff_pct = abs(premium1 - premium2) / max(premium1, premium2) * 100
@@ -1864,7 +1887,7 @@ async def _build_comprehensive_comparison(
             'hakim_rank': hakim_rank,
             'rank': next((r['rank'] for r in ranking if r['company'] == quote.company_name), 0),
             'score': quote.score if quote.score else 0,
-            'premium': _normalize_premium(quote.premium_amount),
+            'premium': _get_normalized_premium_for_comparison(quote),
             'rate': quote.rate or 'N/A',
             'coverage_limit': quote.coverage_limit or 'N/A',
             'deductible': quote.deductible or 'N/A',
@@ -1906,8 +1929,8 @@ async def _build_comprehensive_comparison(
         "premium": [
             {
                 "provider": quote.company_name,
-                "value": _normalize_premium(quote.premium_amount),
-                "formatted": f"SAR {_normalize_premium(quote.premium_amount):,.2f}"
+                "value": _get_normalized_premium_for_comparison(quote),
+                "formatted": f"SAR {_get_normalized_premium_for_comparison(quote):,.2f}"
             }
             for quote in quotes
         ],
@@ -2044,8 +2067,8 @@ async def _build_comprehensive_comparison(
             'company': quote.company_name,  # Alternative key
             'score': quote.score if quote.score else 0,
             'weighted_score': quote.score if quote.score else 0,
-            'premium': _normalize_premium(quote.premium_amount) if quote.premium_amount else 0,
-            'premium_amount': _normalize_premium(quote.premium_amount) if quote.premium_amount else 0,
+            'premium': _get_normalized_premium_for_comparison(quote),
+            'premium_amount': _get_normalized_premium_for_comparison(quote),
             'rate': quote.rate or 'N/A',
             'coverage': coverage_limit if isinstance(coverage_limit, (int, float)) else (coverage_limit if coverage_limit != 'N/A' else 0),
             'coverage_limit': coverage_limit if isinstance(coverage_limit, (int, float)) else (coverage_limit if coverage_limit != 'N/A' else 0),
@@ -2083,7 +2106,7 @@ async def _build_comprehensive_comparison(
         
         data_table['rows'].append(row)
     
-    premiums = [_normalize_premium(q.premium_amount) for q in quotes if q.premium_amount]
+    premiums = [_get_normalized_premium_for_comparison(q) for q in quotes if q.premium_amount]
     scores = [q.score for q in quotes if q.score]
     
     analytics = {
@@ -2220,13 +2243,13 @@ async def _build_comprehensive_comparison(
 
 def _create_fallback_ranking(quotes: List[ExtractedQuoteData]) -> Dict:
     """Create fallback ranking if AI fails."""
-    sorted_quotes = sorted(quotes, key=lambda q: _normalize_premium(q.premium_amount) or float('inf'))
+    sorted_quotes = sorted(quotes, key=lambda q: _get_normalized_premium_for_comparison(q) or float('inf'))
     
-    all_premiums = [_normalize_premium(q.premium_amount) for q in sorted_quotes]
+    all_premiums = [_get_normalized_premium_for_comparison(q) for q in sorted_quotes]
     
     ranking = []
     for i, quote in enumerate(sorted_quotes, 1):
-        premium = _normalize_premium(quote.premium_amount)
+        premium = _get_normalized_premium_for_comparison(quote)
         hakim_score, hakim_tier, hakim_rank = _get_hakim_score(quote.company_name, getattr(quote, 'ia_compliant', False))
         
         ranking.append({
@@ -2267,7 +2290,7 @@ def _create_fallback_ranking(quotes: List[ExtractedQuoteData]) -> Dict:
 def _create_single_quote_comparison(quote: ExtractedQuoteData, comparison_id: Optional[str] = None) -> Dict:
     """Create comparison structure for single quote."""
     
-    premium = _normalize_premium(quote.premium_amount)
+    premium = _get_normalized_premium_for_comparison(quote)
     annual_cost = _normalize_premium(quote.total_annual_cost)
     client_name = getattr(quote, 'client_name', None) or getattr(quote, 'insured_name', 'Not specified')
     hakim_score, hakim_tier, hakim_rank = _get_hakim_score(quote.company_name, getattr(quote, 'ia_compliant', False))
