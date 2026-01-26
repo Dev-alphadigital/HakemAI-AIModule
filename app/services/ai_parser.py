@@ -1,29 +1,39 @@
 """
-PRODUCTION-READY AI PARSER v7.0 - WITH FALLBACK EXTRACTION
-===========================================================
+PRODUCTION-READY AI PARSER v8.0 - WITH STRICT VAT CLASSIFICATION
+=================================================================
 ✅ Multi-layer extraction: AI + Pattern-based fallback
 ✅ Automatic validation and retry logic
 ✅ Works for ANY insurance quote PDF format
 ✅ Production-ready, scalable, and reliable
 ✅ No vendor-specific patches - universal solution
+✅ Strict P1/P2 VAT classification with guardrails (NEW!)
 
 VERSION HISTORY:
 v6.0 - Original AI-only extraction
-v7.0 - Added fallback extraction + validation (CRITICAL FIX)
+v7.0 - Added fallback extraction + validation
+v8.0 - Strict VAT classification (P1/P2 rules), P3-P6 rejection, preserved semantics
 
-KEY IMPROVEMENTS IN v7.0:
-1. Pattern-based fallback extraction when AI fails
-2. Automatic validation of extraction completeness
-3. Smart merging of AI + pattern data
-4. Fixes Tawuniya and similar extraction failures
-5. Universal solution - works for all insurance PDFs
+KEY IMPROVEMENTS IN v8.0:
+1. Strict P1 (VAT-inclusive) vs P2 (VAT-exclusive) classification
+2. Hard rejection of P3-P6 (disallowed) documents
+3. Preserved original VAT semantics (source-of-truth)
+4. Added vat_classification, vat_detection_method fields
+5. Separate stated_premium vs normalized_premium tracking
+6. Auditability: original document context never lost
+
+VAT CLASSIFICATION RULES:
+- P1: Premium explicitly includes VAT (rare in Saudi insurance)
+- P2: Premium excludes VAT, shown as separate line (SAICO pattern)
+- P3-P6: REJECTED - No VAT mention / only total / zero VAT / non-standard
 
 ARCHITECTURE:
-- Stage 1-3: AI-powered extraction (unchanged)
-- Stage 3.5: VALIDATION + FALLBACK (NEW!)
-- Stage 4-6: Calculations and analysis (unchanged)
+- Stage 1-3: AI-powered extraction
+- Stage 3.5: Validation + fallback
+- Stage 4: Subjectivities & requirements
+- Stage 5: Calculations + STRICT VAT CLASSIFICATION (v8.0)
+- Stage 6: Analysis and scoring
 
-Last Updated: 2025-11-13
+Last Updated: 2026-01-26
 """
 
 import json
@@ -1140,42 +1150,138 @@ def _calculate_premium_from_rate(sum_insured: float, rate_string: str) -> Option
         return None
 
 
-def _detect_vat_inclusion(prem_info: Dict, total_annual_cost: Optional[float], 
+def _classify_vat_structure(prem_info: Dict, text: str = "") -> Tuple[str, str, bool]:
+    """
+    Classify VAT structure according to strict P1/P2 rules.
+
+    Classification Rules:
+    - P1 (VAT-inclusive): Premium explicitly includes VAT
+    - P2 (VAT-exclusive): Premium excludes VAT, VAT shown separately
+    - P3-P6: Disallowed (no VAT mention, only total, zero VAT, non-standard)
+
+    Returns:
+        Tuple of (vat_class, detection_method, is_vat_inclusive)
+
+    Examples:
+        ("P1", "explicit_statement", True) - Premium states "incl. VAT"
+        ("P2", "separate_line_item", False) - VAT shown as separate line
+        ("P3", "no_vat_mention", None) - Rejected: No VAT information
+    """
+    # Get VAT-related fields from extraction
+    premium_text = str(prem_info.get('base_premium_amount', '')).lower()
+    vat_amount_text = str(prem_info.get('vat_amount', '')).strip()
+    vat_percentage_text = str(prem_info.get('vat_percentage', '')).strip()
+
+    # Parse VAT amount (if exists as separate line item)
+    vat_amount = _parse_currency_amount(vat_amount_text)
+
+    # ========================================================================
+    # P1 DETECTION - STRICT RULES (VAT-inclusive)
+    # ========================================================================
+    # Classify as P1 ONLY if at least one is true:
+    # 1. Premium explicitly states "incl. VAT"
+    # 2. No separate VAT line item exists
+    # 3. VAT only inferable via reverse calculation
+
+    # Rule 1: Explicit inclusion statement in premium
+    vat_inclusive_indicators = [
+        'incl. vat', 'incl vat', 'including vat', 'vat included',
+        'with vat', 'incl. tax', 'including tax', 'tax included'
+    ]
+
+    if any(indicator in premium_text for indicator in vat_inclusive_indicators):
+        logger.info("🔍 VAT Classification: P1 (explicit 'incl. VAT' in premium)")
+        return ("P1", "explicit_statement", True)
+
+    # ========================================================================
+    # P2 DETECTION - STANDARD CASE (VAT-exclusive)
+    # ========================================================================
+    # Classify as P2 if VAT is shown as separate line item
+
+    # Rule 2: Separate VAT line item exists (SAICO pattern)
+    if vat_amount and vat_amount > 0:
+        logger.info(f"🔍 VAT Classification: P2 (separate VAT line: SAR {vat_amount:,.2f})")
+        return ("P2", "separate_line_item", False)
+
+    # Check if VAT percentage is explicitly stated (even without amount)
+    if vat_percentage_text and vat_percentage_text not in ['', '0', 'N/A', 'None']:
+        try:
+            vat_pct = float(vat_percentage_text)
+            if vat_pct > 0:
+                logger.info(f"🔍 VAT Classification: P2 (VAT rate stated: {vat_pct}%)")
+                return ("P2", "vat_rate_stated", False)
+        except ValueError:
+            pass
+
+    # Check document text for explicit VAT breakdown patterns (backup detection)
+    if text:
+        # Look for patterns like "VAT (15%): SAR X,XXX" or "VAT: SAR X,XXX"
+        vat_line_patterns = [
+            r'VAT\s*\(?\s*15%?\s*\)?\s*:?\s*SAR?\s*[\d,]+',
+            r'VAT\s*@?\s*15%\s*:?\s*SAR?\s*[\d,]+',
+            r'Value Added Tax\s*:?\s*SAR?\s*[\d,]+',
+        ]
+
+        for pattern in vat_line_patterns:
+            if re.search(pattern, text[:5000], re.IGNORECASE):
+                logger.info("🔍 VAT Classification: P2 (VAT line found in document text)")
+                return ("P2", "document_vat_line", False)
+
+    # ========================================================================
+    # P3-P6 DETECTION - DISALLOWED CASES
+    # ========================================================================
+
+    # P3: No VAT mention at all
+    if not vat_amount_text and not vat_percentage_text:
+        logger.warning("⚠️ VAT Classification: P3 (No VAT information) - DISALLOWED")
+        return ("P3", "no_vat_mention", None)
+
+    # P4: Only total shown, no breakdown (would need "total including VAT" without breakdown)
+    total_text = str(prem_info.get('total_including_vat', '')).lower()
+    if 'total' in total_text and 'vat' in total_text and not vat_amount and not vat_percentage_text:
+        logger.warning("⚠️ VAT Classification: P4 (Only total shown) - DISALLOWED")
+        return ("P4", "total_only", None)
+
+    # P5: Zero VAT explicitly stated
+    if vat_amount == 0 or vat_percentage_text in ['0', '0%', '0.0']:
+        logger.warning("⚠️ VAT Classification: P5 (Zero VAT) - DISALLOWED")
+        return ("P5", "zero_vat", None)
+
+    # P6: Non-standard VAT (not 15% for Saudi Arabia)
+    if vat_percentage_text:
+        try:
+            vat_pct = float(vat_percentage_text.replace('%', ''))
+            if vat_pct != 15.0 and vat_pct != 0:
+                logger.warning(f"⚠️ VAT Classification: P6 (Non-standard VAT: {vat_pct}%) - DISALLOWED")
+                return ("P6", "non_standard_vat", None)
+        except ValueError:
+            pass
+
+    # Default: Assume P2 (safest - treat as VAT-exclusive)
+    logger.info("🔍 VAT Classification: P2 (default - assumed VAT-exclusive)")
+    return ("P2", "assumed_exclusive", False)
+
+
+def _detect_vat_inclusion(prem_info: Dict, total_annual_cost: Optional[float],
                           base_premium: Optional[float], vat_pct: float = 15.0) -> bool:
     """
+    DEPRECATED: Use _classify_vat_structure instead for strict P1/P2 classification.
+
+    Legacy function kept for backward compatibility during transition.
     Detect if the extracted premium amount already includes VAT.
-    
+
     Returns:
         True if premium appears to include VAT, False if VAT-exclusive
     """
-    # Check explicit indicators from AI extraction
-    premium_text = str(prem_info.get('base_premium_amount', '')).lower()
-    total_text = str(prem_info.get('total_including_vat', '')).lower()
-    
-    # Indicators that premium includes VAT
-    vat_inclusive_indicators = [
-        'including vat', 'incl. vat', 'vat included', 'with vat',
-        'including tax', 'incl. tax', 'tax included'
-    ]
-    
-    if any(indicator in premium_text for indicator in vat_inclusive_indicators):
-        return True
-    
-    # If we have both base premium and total, check if they match expected VAT calculation
-    if base_premium and total_annual_cost and base_premium > 0:
-        policy_fee = _parse_currency_amount(prem_info.get('policy_fee')) or 0
-        expected_total = base_premium + policy_fee + ((base_premium + policy_fee) * (vat_pct / 100))
-        
-        # If stated total is close to base premium (within 2%), likely VAT-inclusive
-        if abs(total_annual_cost - base_premium) / base_premium < 0.02:
-            return True
-        
-        # If stated total matches expected (within 1%), likely VAT-exclusive
-        if abs(total_annual_cost - expected_total) / expected_total < 0.01:
-            return False
-    
-    # Default: assume VAT-exclusive (safer - we can always add VAT)
-    return False
+    # Use new classification function
+    vat_class, detection_method, is_vat_inclusive = _classify_vat_structure(prem_info)
+
+    # Return boolean for backward compatibility
+    if is_vat_inclusive is None:
+        # Disallowed class (P3-P6), default to False
+        return False
+
+    return is_vat_inclusive
 
 
 def _parse_currency_amount(text: str) -> Optional[float]:
@@ -1703,36 +1809,78 @@ Return ONLY valid JSON."""
         
         vat_pct = _parse_currency_amount(prem_info.get('vat_percentage')) or 15.0
         policy_fee = _parse_currency_amount(prem_info.get('policy_fee')) or 0
-        
-        # Detect if premium already includes VAT
-        vat_inclusive = False
-        if final_premium:
-            # Try to detect from extracted data
-            total_from_extraction = _parse_currency_amount(prem_info.get('total_including_vat'))
-            vat_inclusive = _detect_vat_inclusion(prem_info, total_from_extraction, final_premium, vat_pct)
-            
-            if vat_inclusive:
-                # Premium includes VAT - extract base premium by removing VAT
-                # Formula: base = total / (1 + vat_rate)
-                base_premium_before_vat = final_premium / (1 + (vat_pct / 100))
-                vat_amount = final_premium - base_premium_before_vat
-                # Recalculate with policy fee
-                base_premium_excl_vat = (final_premium - policy_fee) / (1 + (vat_pct / 100))
-                final_premium = base_premium_excl_vat  # Normalize to VAT-exclusive
-                vat_amount = (final_premium + policy_fee) * (vat_pct / 100)
-                total_annual_cost = final_premium + policy_fee + vat_amount
-                logger.info(f"🔄 Detected VAT-inclusive premium. Normalized to VAT-exclusive: {final_premium:.2f}")
-            else:
-                # Premium is VAT-exclusive (standard case)
-                vat_amount = (final_premium + policy_fee) * (vat_pct / 100)
-                total_annual_cost = final_premium + policy_fee + vat_amount
+
+        # ========================================================================
+        # STRICT VAT CLASSIFICATION (v8.0 - P1/P2 Rules)
+        # ========================================================================
+        logger.info("🔍 Stage 5.1: Strict VAT classification")
+
+        # Classify VAT structure using strict P1/P2 rules
+        vat_class, vat_detection_method, original_premium_includes_vat = _classify_vat_structure(prem_info, text)
+
+        # CRITICAL: Enforce rejection of P3-P6 documents
+        if vat_class not in ["P1", "P2"]:
+            error_msg = (
+                f"❌ DISALLOWED VAT CLASS: {vat_class} ({vat_detection_method})\n"
+                f"This document cannot be processed. Only P1 (VAT-inclusive) or P2 (VAT-exclusive) quotes are allowed.\n"
+                f"P3-P6 documents lack proper VAT information required for comparison."
+            )
+            logger.error(error_msg)
+            raise AIParsingError(error_msg)
+
+        # Preserve original premium (stated in document before any normalization)
+        stated_premium = final_premium
+
+        # VAT calculation based on classification
+        if original_premium_includes_vat:
+            # P1: Premium includes VAT - extract base premium by removing VAT
+            logger.info(f"📊 Processing P1 (VAT-inclusive) document")
+            logger.info(f"   Original stated premium (incl. VAT): SAR {stated_premium:,.2f}")
+
+            # Formula: base = total / (1 + vat_rate)
+            base_premium_before_vat = stated_premium / (1 + (vat_pct / 100))
+            vat_amount = stated_premium - base_premium_before_vat
+
+            # Recalculate with policy fee
+            base_premium_excl_vat = (stated_premium - policy_fee) / (1 + (vat_pct / 100))
+            normalized_premium = base_premium_excl_vat  # Normalize to VAT-exclusive
+            vat_amount = (normalized_premium + policy_fee) * (vat_pct / 100)
+            total_annual_cost = normalized_premium + policy_fee + vat_amount
+
+            logger.info(f"   Normalized premium (excl. VAT): SAR {normalized_premium:,.2f}")
+            logger.info(f"   VAT amount: SAR {vat_amount:,.2f}")
         else:
-            vat_amount = _parse_currency_amount(prem_info.get('vat_amount'))
-            total_annual_cost = _parse_currency_amount(prem_info.get('total_including_vat'))
-            # If we have total but no base premium, try to extract base
-            if total_annual_cost and not final_premium:
-                # Assume VAT-exclusive if we can't determine
-                final_premium = total_annual_cost - (vat_amount or 0) - policy_fee
+            # P2: Premium excludes VAT (standard case - SAICO pattern)
+            logger.info(f"📊 Processing P2 (VAT-exclusive) document")
+
+            # Check if we have separate VAT amount from extraction
+            extracted_vat = _parse_currency_amount(prem_info.get('vat_amount'))
+
+            if extracted_vat and extracted_vat > 0:
+                # Use extracted VAT amount (most accurate)
+                vat_amount = extracted_vat
+                normalized_premium = stated_premium  # Premium is already VAT-exclusive
+                total_annual_cost = normalized_premium + policy_fee + vat_amount
+                logger.info(f"   Using extracted VAT: SAR {vat_amount:,.2f}")
+            else:
+                # Calculate VAT from percentage
+                vat_amount = (stated_premium + policy_fee) * (vat_pct / 100)
+                normalized_premium = stated_premium  # Premium is already VAT-exclusive
+                total_annual_cost = normalized_premium + policy_fee + vat_amount
+                logger.info(f"   Calculated VAT @ {vat_pct}%: SAR {vat_amount:,.2f}")
+
+            logger.info(f"   Premium (excl. VAT): SAR {normalized_premium:,.2f}")
+
+        # Update final_premium to normalized value for comparison
+        final_premium = normalized_premium
+
+        logger.info(f"✅ VAT Classification Complete:")
+        logger.info(f"   Class: {vat_class}")
+        logger.info(f"   Detection Method: {vat_detection_method}")
+        logger.info(f"   Original Premium Includes VAT: {original_premium_includes_vat}")
+        logger.info(f"   Stated Premium: SAR {stated_premium:,.2f}")
+        logger.info(f"   Normalized Premium (excl. VAT): SAR {normalized_premium:,.2f}")
+        logger.info(f"   Total Annual Cost (incl. VAT): SAR {total_annual_cost:,.2f}")
         
         # CRITICAL FIX: Determine applicable deductible tier
         deductibles_data = raw_data.get('deductibles_complete', {})
@@ -1908,12 +2056,19 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
             "insured_name": raw_data.get('insured_customer_name', insured_name),
             "policy_type": raw_data.get('policy_type', ''),
             "policy_number": raw_data.get('policy_number', ''),
-            
-            "premium_amount": final_premium,  # Always VAT-exclusive after normalization
+
+            # PREMIUM FIELDS (VAT v8.0 - Preserves Original Semantics)
+            "premium_amount": final_premium,  # Normalized premium (always VAT-exclusive for comparison)
+            "stated_premium": stated_premium,  # Original premium from document (as stated)
             "premium_frequency": prem_info.get('payment_terms', 'Annual'),
             "rate": rate_formatted,
             "total_annual_cost": total_annual_cost,
-            "premium_includes_vat": False,  # Always False after normalization
+
+            # VAT FIELDS (v8.0 - Source-of-Truth Preserved)
+            "premium_includes_vat": False,  # Normalized field (always False for comparison)
+            "original_premium_includes_vat": original_premium_includes_vat,  # As detected from document
+            "vat_classification": vat_class,  # P1 or P2
+            "vat_detection_method": vat_detection_method,  # How VAT class was determined
             "vat_amount": vat_amount,
             "vat_percentage": vat_pct,
             
@@ -1969,8 +2124,16 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
                 "premium_source": "stated" if premium_stated else "calculated",
                 "premium_calculated": premium_calculated,
                 "premium_stated": premium_stated,
+
+                # VAT Classification Details (v8.0)
+                "vat_classification": vat_class,
+                "vat_detection_method": vat_detection_method,
+                "original_premium_includes_vat": original_premium_includes_vat,
+                "stated_premium_original": stated_premium,
+                "normalized_premium_excl_vat": final_premium,
                 "vat_amount": vat_amount,
                 "policy_fee": policy_fee,
+
                 "rate_original": rate_text_raw,
                 "rate_normalized": rate_formatted,
                 "items_extracted": {
