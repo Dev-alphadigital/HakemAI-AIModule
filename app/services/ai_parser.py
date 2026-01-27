@@ -1215,23 +1215,28 @@ def _detect_vat_signal_type(prem_info: Dict, text: str = "") -> str:
         r'premium.*with.*vat.*included',
         r'premium.*inclusive.*vat',
     ]
-    
+
     # Check in premium text and document text FIRST
-    search_text = premium_text + " " + text_lower[:2000]
+    # CRITICAL: Use 15000 chars to catch VAT statements in footer/terms sections
+    text_search_range = text_lower[:15000] if len(text_lower) > 15000 else text_lower
+    search_text = premium_text + " " + text_search_range
+
     for pattern in price_annotation_patterns:
         if re.search(pattern, search_text, re.IGNORECASE):
             logger.info(f"🔍 VAT Signal: PRICE_ANNOTATION (found '{pattern}' - ignoring extracted VAT amounts)")
             logger.info("   Document context takes precedence over extracted amounts")
             return "PRICE_ANNOTATION"
-    
+
     # ========================================================================
     # DETECT LEGAL_CLAUSE (Before FINANCIAL_LINE_ITEM to avoid false positives)
+    # Uses same search_text (15000 chars) to catch "Premium Subject to VAT" in footer
     # ========================================================================
     legal_clause_patterns = [
         r'vat\s+as\s+applicable',
         r'insured\s+shall\s+pay\s+vat',
         r'vat\s+payable\s+by\s+insured',
         r'subject\s+to\s+vat',
+        r'premium.*subject\s+to\s+vat',  # "Premium Subject to VAT, as applicable"
         r'vat\s+will\s+be\s+added',
         r'vat\s+shall\s+be\s+paid',
         r'vat\s+may\s+apply',
