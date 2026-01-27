@@ -23,7 +23,7 @@ env_loaded = False
 for env_path in env_paths:
     if env_path.exists():
         load_dotenv(dotenv_path=env_path, override=True)  # override=True ensures it overwrites
-        print(f"✅ Loaded .env from: {env_path}")
+        print(f"[OK] Loaded .env from: {env_path}")
         env_loaded = True
         break
 
@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     MONGODB_URL: str = os.getenv("MONGO_URI") or os.getenv("MONGODB_URL", "mongodb://localhost:27017")
     MONGODB_DATABASE: str = os.getenv("MONGODB_DATABASE") or os.getenv("MONGO_DB_NAME", "hakemAI")
     MONGODB_COLLECTION: str = os.getenv("MONGODB_COLLECTION", "comparisons")
+
+    # Azure Computer Vision OCR Settings
+    AZURE_VISION_ENDPOINT: str = os.getenv("AZURE_CV_ENDPOINT", "")
+    AZURE_VISION_KEY: str = os.getenv("AZURE_CV_KEY_1", "")  # Primary key
+    AZURE_VISION_KEY_2: str = os.getenv("AZURE_CV_KEY_2", "")  # Secondary key (backup)
+    ENABLE_OCR_FALLBACK: bool = os.getenv("ENABLE_OCR_FALLBACK", "true").lower() == "true"
+    OCR_MAX_DAILY_CALLS: int = int(os.getenv("OCR_MAX_DAILY_CALLS", "100"))
+    OCR_COOLDOWN_SECONDS: int = int(os.getenv("OCR_COOLDOWN_SECONDS", "60"))
 
     class Config:
         env_file = ".env"

@@ -32,7 +32,7 @@ from io import BytesIO
 
 from app.core.config import settings
 from app.services.pdf_extractor import pdf_extractor
-from app.services.ai_parser import ai_parser
+from app.services.ai_parser import ai_parser, VatPolicyViolation
 from app.services.ai_ranker import quote_ranker
 from app.models.quote_model import ExtractedQuoteData
 
@@ -283,18 +283,87 @@ async def compare_insurance_quotes(
 
             # Parse with AI
             logger.info(f"🤖 Parsing with AI: {file.filename}")
-            extracted_data = await ai_parser.extract_structured_data_from_text(
-                text_content, file_info["original_filename"]
-            )
+            try:
+                extracted_data = await ai_parser.extract_structured_data_from_text(
+                    text_content, file_info["original_filename"]
+                )
+                
+                # Mark as accepted (default)
+                extracted_data["quote_status"] = "accepted"
+                extracted_data["rejection_reason"] = None
+                
+            except VatPolicyViolation as vat_error:
+                # VAT policy violation - quote is rejected
+                logger.error(f"❌ VAT Policy Violation for {file.filename}: {vat_error.vat_class} - {vat_error.reason}")
+                
+                # Create rejected quote data structure
+                extracted_data = {
+                    "company_name": "Unknown",  # Will be extracted from filename if possible
+                    "file_name": file_info["original_filename"],
+                    "quote_status": "rejected",
+                    "rejection_reason": f"VAT_POLICY_VIOLATION_{vat_error.vat_class}",
+                    "vat_class": vat_error.vat_class,
+                    "premium_amount": None,
+                    "total_annual_cost": None,
+                    "score": None,
+                    "key_benefits": [],
+                    "exclusions": [],
+                    "warranties": [],
+                    "strengths": [],
+                    "weaknesses": [],
+                    "_rejection_details": {
+                        "vat_class": vat_error.vat_class,
+                        "reason": vat_error.reason,
+                        "details": vat_error.details or {}
+                    }
+                }
+                
+                logger.warning(f"⚠️ Quote rejected: {file.filename} - {vat_error.reason}")
+                
+            except Exception as parse_error:
+                # Other parsing errors - still reject but log differently
+                logger.error(f"❌ Parsing failed for {file.filename}: {parse_error}")
+                extracted_data = {
+                    "company_name": "Unknown",
+                    "file_name": file_info["original_filename"],
+                    "quote_status": "rejected",
+                    "rejection_reason": "PARSING_ERROR",
+                    "vat_class": None,
+                    "premium_amount": None,
+                    "total_annual_cost": None,
+                    "score": None,
+                    "key_benefits": [],
+                    "exclusions": [],
+                    "warranties": [],
+                    "strengths": [],
+                    "weaknesses": [],
+                    "_rejection_details": {
+                        "error": str(parse_error),
+                        "error_type": type(parse_error).__name__
+                    }
+                }
 
             # Collect: keep raw dict for response, model for ranker
             extracted_quotes.append(extracted_data)
-            try:
-                extracted_model = ExtractedQuoteData(**extracted_data)
-                extracted_models.append(extracted_model)
-            except Exception as model_err:
-                logger.error(f"❌ Validation failed for {file.filename}: {model_err}")
-                return
+            
+            # Only create model if quote is accepted (rejected quotes may not have all required fields)
+            if extracted_data.get("quote_status") == "accepted":
+                try:
+                    extracted_model = ExtractedQuoteData(**extracted_data)
+                    extracted_models.append(extracted_model)
+                except Exception as model_err:
+                    logger.error(f"❌ Validation failed for {file.filename}: {model_err}")
+                    # Mark as rejected due to validation failure
+                    extracted_data["quote_status"] = "rejected"
+                    extracted_data["rejection_reason"] = f"VALIDATION_ERROR: {str(model_err)}"
+            else:
+                # For rejected quotes, try to create model with minimal data
+                try:
+                    extracted_model = ExtractedQuoteData(**extracted_data)
+                    # Don't add to extracted_models - rejected quotes shouldn't be ranked
+                    logger.info(f"📋 Rejected quote model created (not added to ranking): {file.filename}")
+                except Exception as model_err:
+                    logger.warning(f"⚠️ Could not create model for rejected quote {file.filename}: {model_err}")
 
             files_processed.append(file_info["file_name"])
 
@@ -358,14 +427,30 @@ async def compare_insurance_quotes(
 
         logger.info(f"\n✅ Successfully extracted {len(extracted_models)} quotes")
 
+        # Filter out rejected quotes before ranking (safety check)
+        valid_quotes = [
+            q for q in extracted_models 
+            if getattr(q, 'quote_status', 'accepted') == 'accepted'
+        ]
+        
+        rejected_count = len(extracted_models) - len(valid_quotes)
+        if rejected_count > 0:
+            logger.warning(f"⚠️ Filtered out {rejected_count} rejected quote(s) before ranking")
+        
+        if not valid_quotes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"All quotes were rejected. {len(extracted_quotes)} quote(s) processed, but none passed VAT policy validation.",
+            )
+
         # Update progress to 75% - preparing for AI ranking
         progress_tracker.update_progress(
             job_id=job_id,
             step_name="Preparing Analysis",
             percentage=75.0,
-            details=f"Preparing {len(extracted_models)} quotes for comparison",
+            details=f"Preparing {len(valid_quotes)} quotes for comparison",
             sub_step="Organizing data for AI ranking",
-            files_processed=len(extracted_models),
+            files_processed=len(valid_quotes),
         )
 
         # ====================================================================
@@ -373,7 +458,7 @@ async def compare_insurance_quotes(
         # ====================================================================
 
         logger.info(f"\n{'='*70}")
-        logger.info(f"🔀 Generating comparison for {len(extracted_models)} quotes")
+        logger.info(f"🔀 Generating comparison for {len(valid_quotes)} quotes")
         logger.info(f"{'='*70}")
 
         # Update progress to 80% - AI ranking in progress
@@ -381,13 +466,13 @@ async def compare_insurance_quotes(
             job_id=job_id,
             step_name="AI Ranking",
             percentage=80.0,
-            details=f"AI is comparing and ranking {len(extracted_models)} quotes",
+            details=f"AI is comparing and ranking {len(valid_quotes)} quotes",
             sub_step="Analyzing coverage, pricing, and benefits",
-            files_processed=len(extracted_models),
+            files_processed=len(valid_quotes),
         )
 
-        # Rank and compare using AI Ranker (pass the comparison_id)
-        comparison_result = await quote_ranker.rank_and_compare_quotes(extracted_models, comparison_id=comparison_id)
+        # Rank and compare using AI Ranker (pass the comparison_id) - only valid quotes
+        comparison_result = await quote_ranker.rank_and_compare_quotes(valid_quotes, comparison_id=comparison_id)
 
         # Update progress to 90% - generating results
         progress_tracker.update_progress(
@@ -396,14 +481,16 @@ async def compare_insurance_quotes(
             percentage=90.0,
             details="Creating comprehensive comparison report",
             sub_step="Finalizing analysis and recommendations",
-            files_processed=len(extracted_models),
+            files_processed=len(valid_quotes),
         )
 
         # Build complete response
         response_data = {
             "comparison_id": comparison_id,
             "status": "completed",
-            "total_quotes": len(extracted_models),
+            "total_quotes": len(valid_quotes),
+            "total_quotes_processed": len(extracted_quotes),
+            "rejected_quotes_count": rejected_count,
             # All sections from ranker
             **comparison_result,
             # Metadata

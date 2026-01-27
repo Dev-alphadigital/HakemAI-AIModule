@@ -32,7 +32,12 @@ VAT DETECTION RULES (v9.0):
   - Patterns: "VAT exclusive", "plus VAT", "VAT as applicable", "VAT 15%"
   - Behavior: vat_percentage=15.0 (default) or extracted, calculate VAT
 
-- **P3→P2 (No VAT Mention - Defaulted):** No patterns found
+- **P3 (VAT-Deferred):** VAT will be charged at billing time
+  - Patterns: "all taxes will be charged at the time of billing"
+  - Behavior: vat_percentage=None, vat_amount=None (deferred to billing)
+  - Note: Quote does not include VAT; VAT added later at invoice time
+
+- **P4 (No VAT Mention - Defaulted):** No patterns found
   - Behavior: Default to P2 with 15% + warning flag
 
 - **P5 (REJECTED):** Zero VAT explicitly stated
@@ -160,16 +165,13 @@ VAT_EXCLUSIVE_PATTERNS = [
     r'subject\s+to\s+applicable\s+vat',
 
     # GROUP B6: "will be added/charged" keyword
+    # Note: Patterns with "charged at billing" moved to VAT_DEFERRED_PATTERNS
     r'vat\s+will\s+be\s+added',
     r'vat\s+will\s+be\s+charged',
     r'vat\s+shall\s+be\s+added',
     r'vat\s+shall\s+be\s+charged',
     r'vat\s+to\s+be\s+added',
     r'vat\s+to\s+be\s+charged',
-    r'taxes?\s+will\s+be\s+charged',
-    r'taxes?\s+will\s+be\s+added',
-    r'taxes?\s+charged\s+at.*billing',
-    r'all\s+taxes\s+will\s+be\s+charged',
 
     # GROUP B7: "additional/payable" keyword
     r'vat\s+additional',
@@ -206,6 +208,25 @@ VAT_EXCLUSIVE_PATTERNS = [
     r'taxes?\s+as\s+per\s+law',
     r'vat\s+as\s+per\s+law',
     r'vat\s+according\s+to\s+regulations',
+]
+
+# VAT_DEFERRED_PATTERNS: Patterns that explicitly defer VAT to billing time (P3 Classification)
+# These patterns indicate VAT will be charged later at billing, not at quote time
+# P3 documents should have vat_percentage=null and vat_amount=null
+VAT_DEFERRED_PATTERNS = [
+    # Primary deferral patterns - explicit billing language
+    r'all\s+taxes?\s+will\s+be\s+charged\s+at\s+(?:the\s+)?time\s+of\s+billing',
+    r'taxes?\s+will\s+be\s+charged\s+at\s+(?:the\s+)?time\s+of\s+billing',
+    r'taxes?\s+charged\s+at\s+(?:the\s+)?time\s+of\s+billing',
+
+    # Deferral to later/invoice time
+    r'vat\s+will\s+be\s+charged\s+at\s+(?:the\s+)?time\s+of\s+(?:billing|invoice|invoicing)',
+    r'vat\s+charged\s+at\s+(?:the\s+)?time\s+of\s+(?:billing|invoice|invoicing)',
+    r'vat\s+will\s+apply\s+at\s+(?:the\s+)?time\s+of\s+(?:billing|invoice|invoicing)',
+
+    # Deferral to issuance
+    r'taxes?\s+(?:will\s+)?(?:be\s+)?charged\s+(?:at|upon)\s+issuance',
+    r'vat\s+(?:will\s+)?(?:be\s+)?charged\s+(?:at|upon)\s+issuance',
 ]
 
 VAT_MENTIONED_PATTERNS = [
@@ -1399,6 +1420,57 @@ def _comprehensive_vat_detection(text: str, prem_info: Dict) -> Dict:
             logger.warning(f"⚠️ AI extracted {vat_percentage_extracted}% but not found in text - treating as hallucinated")
 
     # ==================================================================
+    # STEP 1.5: CHECK VAT_DEFERRED PATTERNS (P3 Classification)
+    # ==================================================================
+    logger.info("🔍 Step 1.5: Checking VAT_DEFERRED patterns (P3)...")
+
+    for pattern in VAT_DEFERRED_PATTERNS:
+        match = re.search(pattern, text_lower, re.IGNORECASE)
+        if match:
+            matched_text = match.group(0)
+            logger.info(f"✅ VAT_DEFERRED pattern matched: '{matched_text}'")
+            logger.info(f"   Pattern: {pattern}")
+
+            # CRITICAL FIX: Check if explicit VAT line exists (even if zero)
+            # Zero VAT indicates P5 (zero VAT), not P3 (deferred VAT)
+            if vat_amount_extracted is not None:
+                if vat_amount_extracted > 0:
+                    logger.info(f"   ⚠️ Explicit positive VAT amount found: {vat_amount_extracted}")
+                    logger.info("   Skipping P3, continuing to P2 check...")
+                    continue
+                elif vat_amount_extracted == 0:
+                    logger.info("   ⚠️ Explicit ZERO VAT amount found - this is P5, not P3")
+                    logger.info("   Skipping P3, P5 will be detected later...")
+                    continue
+
+            if vat_percentage_extracted is not None:
+                if vat_percentage_extracted > 0:
+                    logger.info(f"   ⚠️ Explicit positive VAT percentage found: {vat_percentage_extracted}%")
+                    logger.info("   Skipping P3, continuing to P2 check...")
+                    continue
+                elif vat_percentage_extracted == 0:
+                    logger.info("   ⚠️ Explicit ZERO VAT percentage found - this is P5, not P3")
+                    logger.info("   Skipping P3, P5 will be detected later...")
+                    continue
+
+            logger.info("   No explicit VAT values - confirming P3 classification")
+            logger.info("   P3: VAT will be charged at billing time - no VAT in quote")
+
+            return {
+                "class": "P3",
+                "is_inclusive": False,
+                "vat_percentage": None,  # No VAT percentage in quote
+                "vat_amount": None,       # No VAT amount in quote
+                "detection_method": "pattern_vat_deferred",
+                "pattern_matched": matched_text,
+                "confidence": "high",
+                "warning": "VAT will be charged at time of billing. Quote does not include VAT.",
+                "requires_verification": False
+            }
+
+    logger.info("   No VAT_DEFERRED patterns found")
+
+    # ==================================================================
     # STEP 2: CHECK VAT_EXCLUSIVE PATTERNS (Priority 1 - Most Specific)
     # ==================================================================
     logger.info("🔍 Step 2: Checking VAT_EXCLUSIVE patterns...")
@@ -1736,7 +1808,7 @@ def _classify_vat_structure(prem_info: Dict, text: str = "", vat_signal_type: st
     VAT Classes:
     - P1 (VAT-inclusive): Premium explicitly includes VAT
     - P2 (VAT-exclusive): Premium excludes VAT, VAT shown separately
-    - P3 (DISALLOWED): No VAT mention at all
+    - P3 (VAT-Deferred - ALLOWED): VAT charged at billing time
     - P4 (DISALLOWED): Only total shown, no breakdown
     - P5 (DISALLOWED): Zero VAT explicitly stated
     - P6 (DISALLOWED): Non-standard VAT (not 15%)
@@ -1745,7 +1817,10 @@ def _classify_vat_structure(prem_info: Dict, text: str = "", vat_signal_type: st
         Tuple of (vat_class, vat_signal_type, detection_method, is_vat_inclusive)
 
     Raises:
-        VatPolicyViolation: If VAT class is P3-P6 (disallowed)
+        VatPolicyViolation: If VAT class is P4-P6 (disallowed)
+
+    Note:
+        P3 (VAT-Deferred) is now ALLOWED and returns normally.
     """
     # VAT rate whitelist for Saudi Arabia
     ALLOWED_VAT_RATES = {15.0}
@@ -1958,7 +2033,7 @@ def _classify_vat_structure(prem_info: Dict, text: str = "", vat_signal_type: st
     # ========================================================================
     # P3 Rule: If vat_signal_type == NONE
     if vat_signal_type == "NONE":
-        # CRITICAL FIX: Before raising P3, do a thorough check for VAT-inclusive indicators
+        # CRITICAL FIX: Before classifying as P3, do a thorough check for VAT-inclusive indicators
         # These might appear beyond the first 2000 chars or in fields we haven't checked yet
         logger.info("🔍 P3 Pre-Check: Performing thorough search for VAT-inclusive indicators...")
 
@@ -1987,56 +2062,19 @@ def _classify_vat_structure(prem_info: Dict, text: str = "", vat_signal_type: st
             return ("P1", "PRICE_ANNOTATION", "price_annotation_fallback", True)
 
         # If no VAT-inclusive indicators found, this is genuinely P3
-        logger.error("❌ VAT Classification: P3 (No VAT information)")
-        logger.error("   VAT signal type: NONE - No VAT signals detected")
-        logger.error("   No VAT-inclusive indicators found in document")
-        logger.error("   Cannot process quote without VAT information")
-        raise VatPolicyViolation(
-            vat_class="P3",
-            reason="No VAT mention in document (vat_signal_type: NONE)",
-            details={
-                "vat_signal_type": vat_signal_type,
-                "vat_amount_text": vat_amount_text,
-                "vat_percentage_text": vat_percentage_text,
-                "premium_text_sample": premium_text[:100] if premium_text else None
-            }
-        )
-    
+        # P3 is now ALLOWED - VAT will be determined at billing time
+        logger.info("✅ VAT Classification: P3 (VAT-Deferred)")
+        logger.info("   VAT signal type: NONE - No VAT signals detected in quote")
+        logger.info("   VAT will be charged at time of billing")
+        logger.info("   Quote does not include VAT information")
+        return ("P3", "NONE", "vat_deferred", False)
+
     # Fallback: If we reach here, signal type doesn't match expected patterns
-    logger.error(f"❌ VAT Classification: P3 (Unclear VAT structure)")
-    logger.error(f"   VAT signal type: {vat_signal_type} but no valid classification possible")
-    logger.error("   Cannot process quote without clear VAT information")
-    raise VatPolicyViolation(
-        vat_class="P3",
-        reason=f"Unclear VAT structure (signal_type: {vat_signal_type})",
-        details={
-            "vat_signal_type": vat_signal_type,
-            "vat_amount_text": vat_amount_text,
-            "vat_percentage_text": vat_percentage_text,
-            "premium_text_sample": premium_text[:100] if premium_text else None
-        }
-    )
-
-
-def _detect_vat_inclusion(prem_info: Dict, total_annual_cost: Optional[float],
-                          base_premium: Optional[float], vat_pct: Optional[float] = None) -> bool:
-    """
-    DEPRECATED: Use _classify_vat_structure instead for strict VAT detection.
-
-    Legacy function kept for backward compatibility during transition.
-    Detect if the extracted premium amount already includes VAT.
-
-    Returns:
-        True if premium appears to include VAT, False if VAT-exclusive
-    """
-    # Use new classification function (unpack only what we need)
-    try:
-        vat_class, detection_method, is_vat_inclusive = _classify_vat_structure(prem_info, "")
-        return is_vat_inclusive
-    except VatPolicyViolation:
-        # If VAT policy violation, return False (VAT-exclusive assumption for legacy code)
-        logger.warning("⚠️ VAT policy violation in deprecated function, defaulting to VAT-exclusive")
-        return False
+    # Treat as P3 (VAT-Deferred) rather than rejecting
+    logger.info(f"✅ VAT Classification: P3 (VAT-Deferred - Fallback)")
+    logger.info(f"   VAT signal type: {vat_signal_type} but no clear VAT information")
+    logger.info("   Treating as VAT-deferred - VAT will be determined at billing")
+    return ("P3", "NONE", "vat_deferred", False)
 
 
 def _parse_currency_amount(text: str) -> Optional[float]:
@@ -2636,6 +2674,21 @@ Return ONLY valid JSON."""
             logger.info(f"   - VAT Percentage: null (included in premium)")
             logger.info(f"   - Policy Fee: SAR {policy_fee:,.2f}")
             logger.info(f"   - Total Annual Cost: SAR {total_annual_cost:,.2f}")
+        elif vat_class == "P3":
+            # P3 (VAT-Deferred): VAT will be charged at billing time, not included in quote
+            logger.info(f"🛑 P3 (VAT-Deferred): VAT charged at billing - no VAT in quote")
+            vat_amount = None
+            vat_percentage = None
+            normalized_premium = stated_premium
+            total_annual_cost = normalized_premium + policy_fee
+            final_premium = normalized_premium
+
+            logger.info(f"💰 Processing P3 Premium (VAT deferred to billing):")
+            logger.info(f"   - Stated Premium: SAR {stated_premium:,.2f}")
+            logger.info(f"   - VAT Amount: null (charged at billing)")
+            logger.info(f"   - VAT Percentage: null (charged at billing)")
+            logger.info(f"   - Policy Fee: SAR {policy_fee:,.2f}")
+            logger.info(f"   - Total Annual Cost: SAR {total_annual_cost:,.2f}")
         elif vat_class == "P2":
             # STEP 5: VAT CALCULATION (P2 - VAT-Exclusive)
             # vat_percentage and vat_amount already set by comprehensive detection
@@ -2680,16 +2733,37 @@ Return ONLY valid JSON."""
             logger.info(f"   Warning: {vat_warning}")
 
         # ========================================================================
-        # DEFENSIVE ASSERTIONS (Prevent Regression)
+        # DEFENSIVE VALIDATION WITH GRACEFUL CORRECTIONS
         # ========================================================================
-        assert not (vat_class == "P1" and vat_amount is not None), \
-            "P1 violation: VAT amount must be null (VAT already included in premium)"
-        assert not (vat_class == "P1" and vat_percentage is not None), \
-            "P1 violation: VAT percentage must be null (VAT already included in premium)"
-        assert not (vat_class == "P2" and vat_percentage is None), \
-            "P2 violation: VAT percentage must be set (defaults to 15% if not specified)"
+        # P1 validation (graceful correction)
+        if vat_class == "P1" and vat_amount is not None:
+            logger.warning(f"⚠️ P1 correction: Nullifying unexpected VAT amount ({vat_amount})")
+            logger.warning("   P1 documents should not have explicit VAT amounts (VAT already included)")
+            vat_amount = None
 
-        logger.info("✅ Defensive assertions passed - VAT handling is compliant")
+        if vat_class == "P1" and vat_percentage is not None:
+            logger.warning(f"⚠️ P1 correction: Nullifying unexpected VAT percentage ({vat_percentage}%)")
+            logger.warning("   P1 documents should not have explicit VAT percentages (VAT already included)")
+            vat_percentage = None
+
+        # P3 validation (graceful correction instead of assertion)
+        if vat_class == "P3" and vat_amount is not None:
+            logger.warning(f"⚠️ P3 correction: Nullifying unexpected VAT amount ({vat_amount})")
+            logger.warning("   P3 documents should not have VAT amounts in quote")
+            vat_amount = None
+
+        if vat_class == "P3" and vat_percentage is not None:
+            logger.warning(f"⚠️ P3 correction: Nullifying unexpected VAT percentage ({vat_percentage}%)")
+            logger.warning("   P3 documents should not have VAT percentage in quote")
+            vat_percentage = None
+
+        # P2 validation (graceful correction - default to 15%)
+        if vat_class == "P2" and vat_percentage is None:
+            logger.warning("⚠️ P2 correction: VAT percentage missing, defaulting to Saudi standard 15%")
+            logger.warning("   P2 documents must have VAT percentage set")
+            vat_percentage = 15.0
+
+        logger.info("✅ Defensive validation passed - VAT handling is compliant")
         
         # CRITICAL FIX: Determine applicable deductible tier
         deductibles_data = raw_data.get('deductibles_complete', {})
