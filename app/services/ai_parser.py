@@ -1260,24 +1260,51 @@ def _detect_vat_signal_type(prem_info: Dict, text: str = "") -> str:
     # This prevents hallucinated VAT amounts from being accepted
     text_has_vat_patterns = False
     if text:
+        # FUTURE-PROOF VAT DETECTION: Catches VAT in ANY context
+        # (standalone lines, tables, formulas, calculations, any format)
         financial_patterns = [
-            # Patterns with amounts
+            # ═══════════════════════════════════════════════════════════════
+            # CATEGORY 1: VAT with SAR amounts (explicit financial line items)
+            # ═══════════════════════════════════════════════════════════════
             r'VAT\s*\(?\s*\d+%?\s*\)?\s*:?\s*SAR?\s*[\d,]+',  # VAT (15%): SAR 1,500
             r'VAT\s*@?\s*\d+%\s*:?\s*SAR?\s*[\d,]+',  # VAT @ 15%: SAR 1,500
             r'Value Added Tax\s*:?\s*SAR?\s*[\d,]+',  # Value Added Tax: SAR 1,500
             r'VAT\s*:?\s*SAR?\s*[\d,]+',  # VAT: SAR 1,500
             r'VAT\s+[\d,]+\s*SAR',  # VAT 1,500 SAR
+            r'SAR\s*[\d,]+.*VAT',  # SAR 1,500 VAT (any text between)
 
-            # Patterns with percentages (FLEXIBLE - catches any VAT mention with %)
-            r'VAT\s*\(?\s*\d+\.?\d*\s*%\s*\)?',  # VAT (15%), VAT 69%, VAT (69 %)
+            # ═══════════════════════════════════════════════════════════════
+            # CATEGORY 2: VAT with percentages (ANY context - CRITICAL FOR "69% VAT")
+            # ═══════════════════════════════════════════════════════════════
+            # Standard percentage formats
+            r'VAT\s*\(?\s*\d+\.?\d*\s*%\s*\)?',  # VAT (15%), VAT 69%, VAT (69 %), VAT(15%)
             r'VAT\s*:?\s*\d+\.?\d*\s*%',  # VAT: 15%, VAT 69%
-            r'\d+\.?\d*\s*%\s*VAT',  # 15% VAT, 69% VAT
-            r'VAT\s+Rate\s*:?\s*\d+\.?\d*\s*%',  # VAT Rate: 15%
+            r'\d+\.?\d*\s*%\s*VAT',  # 15% VAT, 69% VAT, 69.0% VAT ⭐ CRITICAL
+            r'VAT\s+Rate\s*:?\s*\d+\.?\d*\s*%',  # VAT Rate: 15%, VAT Rate 69%
             r'VAT\s+Percentage\s*:?\s*\d+\.?\d*\s*%',  # VAT Percentage: 69%
 
-            # Generic VAT mentions with numbers nearby
-            r'VAT[:\s]+\d+',  # VAT: 15 or VAT 69
-            r'Value\s+Added\s+Tax[:\s]+\d+',  # Value Added Tax: 15
+            # In calculations/formulas ⭐ NEW - for "SAR 21,689.38 + SAR 50 Fee + 69% VAT"
+            r'[\+\-\*\/\=]\s*\d+\.?\d*\s*%\s*VAT',  # + 69% VAT, - 15% VAT
+            r'[\+\-\*\/\=]\s*VAT\s*\d+\.?\d*\s*%',  # + VAT 69%, + VAT 15%
+            r'SAR\s*[\d,\.]+\s*[\+\-\*].*\d+\.?\d*\s*%\s*VAT',  # SAR 1,500 + ... + 69% VAT
+            r'SAR\s*[\d,\.]+\s*[\+\-\*].*VAT\s*\d+\.?\d*\s*%',  # SAR 1,500 + VAT 69%
+            r'[\d,\.]+\s*[\+\-\*].*\d+\.?\d*\s*%\s*VAT',  # 1,500 + 69% VAT
+
+            # Table/structured formats
+            r'VAT[\s\|]*\d+\.?\d*\s*%',  # VAT | 69%, VAT    69%
+            r'\d+\.?\d*\s*%[\s\|]*VAT',  # 69% | VAT, 69%    VAT
+
+            # ═══════════════════════════════════════════════════════════════
+            # CATEGORY 3: Generic VAT with numbers (no % sign)
+            # ═══════════════════════════════════════════════════════════════
+            r'VAT[:\s]+\d+\.?\d*(?!\d)',  # VAT: 15, VAT 69 (not part of larger number)
+            r'Value\s+Added\s+Tax[:\s]+\d+\.?\d*',  # Value Added Tax: 15
+
+            # ═══════════════════════════════════════════════════════════════
+            # CATEGORY 4: Ultra-flexible fallback (catches ANY VAT + number combo)
+            # ═══════════════════════════════════════════════════════════════
+            r'(?i)VAT.*?\d+\.?\d*\s*%',  # VAT followed by any text then percentage
+            r'\d+\.?\d*\s*%.*?(?i)VAT',  # Percentage followed by any text then VAT (within 100 chars)
         ]
         for pattern in financial_patterns:
             if re.search(pattern, text[:5000], re.IGNORECASE):
