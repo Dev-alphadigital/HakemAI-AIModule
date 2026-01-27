@@ -1356,7 +1356,21 @@ def _classify_vat_structure(prem_info: Dict, text: str = "", vat_signal_type: st
     logger.info(f"   VAT Percentage Text: '{vat_percentage_text}'")
     logger.info(f"   VAT Amount Parsed: {vat_amount}")
     logger.info(f"   VAT Percentage Parsed: {vat_percentage}")
-    
+
+    # ========================================================================
+    # CRITICAL FIX: NULLIFY HALLUCINATED VALUES
+    # ========================================================================
+    # If signal_type is not FINANCIAL_LINE_ITEM, the extracted VAT values are hallucinated
+    # and must be set to None to prevent incorrect P5/P6 classification
+    if vat_signal_type not in ["FINANCIAL_LINE_ITEM", "LEGAL_CLAUSE"]:
+        if vat_amount is not None or vat_percentage is not None:
+            logger.warning("🚫 Nullifying hallucinated VAT values (signal type does not support VAT math)")
+            logger.warning(f"   Original vat_amount: {vat_amount}, vat_percentage: {vat_percentage}")
+            logger.warning(f"   Signal type: {vat_signal_type} (only FINANCIAL_LINE_ITEM can have VAT numbers)")
+            vat_amount = None
+            vat_percentage = None
+            logger.warning("   ✅ Hallucinated values nullified - will not trigger P5/P6 violations")
+
     # ========================================================================
     # LEGAL_CLAUSE HANDLING (Critical Fix - Never produces VAT math)
     # ========================================================================
@@ -1502,8 +1516,38 @@ def _classify_vat_structure(prem_info: Dict, text: str = "", vat_signal_type: st
     # ========================================================================
     # P3 Rule: If vat_signal_type == NONE
     if vat_signal_type == "NONE":
+        # CRITICAL FIX: Before raising P3, do a thorough check for VAT-inclusive indicators
+        # These might appear beyond the first 2000 chars or in fields we haven't checked yet
+        logger.info("🔍 P3 Pre-Check: Performing thorough search for VAT-inclusive indicators...")
+
+        vat_inclusive_indicators = [
+            'incl. vat', 'incl vat', 'including vat', 'vat included',
+            'with vat', 'incl. tax', 'including tax', 'tax included',
+            'inclusive vat', 'inclusive of vat', 'inclusive tax',
+            'total premium with vat included', 'premium with vat included'
+        ]
+
+        # Search in premium_text, total_text, and FULL document text (not just 2000 chars)
+        text_lower = text.lower() if text else ""
+        search_text = premium_text + " " + total_text + " " + text_lower
+
+        found_indicator = None
+        for indicator in vat_inclusive_indicators:
+            if indicator in search_text:
+                found_indicator = indicator
+                break
+
+        if found_indicator:
+            # This is a P1 document that was missed by earlier detection
+            logger.info(f"✅ P3 Override: Found VAT-inclusive indicator '{found_indicator}'")
+            logger.info("   This is a P1 (VAT-inclusive) document, not P3")
+            logger.info("   Document explicitly states VAT is included in premium")
+            return ("P1", "PRICE_ANNOTATION", "price_annotation_fallback", True)
+
+        # If no VAT-inclusive indicators found, this is genuinely P3
         logger.error("❌ VAT Classification: P3 (No VAT information)")
         logger.error("   VAT signal type: NONE - No VAT signals detected")
+        logger.error("   No VAT-inclusive indicators found in document")
         logger.error("   Cannot process quote without VAT information")
         raise VatPolicyViolation(
             vat_class="P3",
