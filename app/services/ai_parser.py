@@ -1283,7 +1283,13 @@ def _detect_vat_signal_type(prem_info: Dict, text: str = "") -> str:
             r'VAT\s+Rate\s*:?\s*\d+\.?\d*\s*%',  # VAT Rate: 15%, VAT Rate 69%
             r'VAT\s+Percentage\s*:?\s*\d+\.?\d*\s*%',  # VAT Percentage: 69%
 
-            # In calculations/formulas ⭐ NEW - for "SAR 21,689.38 + SAR 50 Fee + 69% VAT"
+            # Administrative/legal statements ⭐ NEW - for "VAT 15% additional will apply"
+            r'VAT\s+\d+\.?\d*\s*%\s+additional',  # VAT 15% additional
+            r'VAT\s+\d+\.?\d*\s*%.*?will\s+apply',  # VAT 15% will apply, VAT 15% additional will apply
+            r'VAT\s+\d+\.?\d*\s*%.*?applicable',  # VAT 15% applicable
+            r'VAT\s+\d+\.?\d*\s*%.*?to\s+be\s+added',  # VAT 15% to be added
+
+            # In calculations/formulas ⭐ for "SAR 21,689.38 + SAR 50 Fee + 69% VAT"
             r'[\+\-\*\/\=]\s*\d+\.?\d*\s*%\s*VAT',  # + 69% VAT, - 15% VAT
             r'[\+\-\*\/\=]\s*VAT\s*\d+\.?\d*\s*%',  # + VAT 69%, + VAT 15%
             r'SAR\s*[\d,\.]+\s*[\+\-\*].*\d+\.?\d*\s*%\s*VAT',  # SAR 1,500 + ... + 69% VAT
@@ -1307,8 +1313,12 @@ def _detect_vat_signal_type(prem_info: Dict, text: str = "") -> str:
             r'VAT.*?\d+\.?\d*\s*%',  # VAT followed by any text then percentage
             r'\d+\.?\d*\s*%.*?VAT',  # Percentage followed by any text then VAT
         ]
+        # Search expanded text range (15000 chars) to catch VAT statements anywhere in document
+        # Many documents have VAT info in footer/terms sections which are beyond 5000 chars
+        search_text = text[:15000] if len(text) > 15000 else text
+
         for pattern in financial_patterns:
-            if re.search(pattern, text[:5000], re.IGNORECASE):
+            if re.search(pattern, search_text, re.IGNORECASE):
                 text_has_vat_patterns = True
                 logger.info(f"🔍 Document text contains VAT pattern: '{pattern}'")
                 break
@@ -1515,8 +1525,11 @@ def _classify_vat_structure(prem_info: Dict, text: str = "", vat_signal_type: st
                 r'Value Added Tax\s*:?\s*SAR?\s*[\d,]+',
             ]
 
+            # Search expanded text range (15000 chars) to catch VAT anywhere in document
+            search_text = text[:15000] if len(text) > 15000 else text
+
             for pattern in vat_line_patterns:
-                if re.search(pattern, text[:5000], re.IGNORECASE):
+                if re.search(pattern, search_text, re.IGNORECASE):
                     logger.info("✅ VAT Classification: P2 (VAT-exclusive - FINANCIAL_LINE_ITEM)")
                     logger.info("   VAT line with amount found in document text")
                     return ("P2", "FINANCIAL_LINE_ITEM", "document_vat_line_pattern", False)
