@@ -972,9 +972,19 @@ async def _extract_insurer_from_text(text: str, filename: str = "", pdf_path: Op
     }
     
     for key, full_name in KNOWN_INSURER_KEYWORDS.items():
-        if key in text_upper:
-            logger.info(f"✅ Detected insurer from text: {full_name}")
-            return full_name
+        # For short keywords (≤4 chars), use word boundary regex to avoid false positives
+        # e.g., 'ART' should match 'ART' but not 'PARTial'
+        if len(key) <= 4:
+            # Use word boundary regex
+            pattern = r'\b' + re.escape(key) + r'\b'
+            if re.search(pattern, text_upper):
+                logger.info(f"✅ Detected insurer from text (word boundary): {full_name} (keyword: {key})")
+                return full_name
+        else:
+            # For longer keywords, substring matching is safe
+            if key in text_upper:
+                logger.info(f"✅ Detected insurer from text: {full_name} (keyword: {key})")
+                return full_name
     
     # Check for UCA as standalone abbreviation (common in documents) - search full text
     uca_patterns = [
