@@ -2199,7 +2199,17 @@ Return ONLY valid JSON."""
         logger.info(f"   VAT Class: {vat_class}")
         logger.info(f"   Detection Method: {vat_detection_method}")
         logger.info(f"   Premium Includes VAT: {'Yes' if original_premium_includes_vat else 'No'}")
-        
+
+        # ========================================================================
+        # CRITICAL ENFORCEMENT: P1 documents must not have VAT breakdown
+        # ========================================================================
+        # P1 (VAT-inclusive): VAT already included in premium, no separate amounts
+        # P3, P4, P5: Will be rejected below, but enforce null for safety
+        if vat_class in {"P1", "P3", "P4", "P5"}:
+            logger.info(f"🔒 VAT Class {vat_class}: Enforcing vat_percentage = None, vat_amount = None")
+            vat_percentage = None
+            vat_amount = None
+
         # STEP 3: POLICY GATE - Reject disallowed classes (should already be raised, but double-check)
         if vat_class in ["P3", "P4", "P5", "P6"]:
             # This should have been raised already, but safety check
