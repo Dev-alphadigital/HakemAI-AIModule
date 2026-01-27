@@ -1214,6 +1214,10 @@ def _detect_vat_signal_type(prem_info: Dict, text: str = "") -> str:
         r'premium.*includes.*vat',
         r'premium.*with.*vat.*included',
         r'premium.*inclusive.*vat',
+        # Explicit keywords ⭐ NEW
+        r'vat\s+inclusive',  # "VAT Inclusive"
+        r'rates.*vat\s+inclusive',  # "Rates and premiums in this quote are VAT inclusive"
+        r'premium.*vat\s+inclusive',  # "Premium is VAT inclusive"
     ]
 
     # Check in premium text and document text FIRST
@@ -1312,7 +1316,17 @@ def _detect_vat_signal_type(prem_info: Dict, text: str = "") -> str:
             r'Value\s+Added\s+Tax[:\s]+\d+\.?\d*',  # Value Added Tax: 15
 
             # ═══════════════════════════════════════════════════════════════
-            # CATEGORY 4: Ultra-flexible fallback (catches ANY VAT + number combo)
+            # CATEGORY 4: Explicit "VAT Exclusive" keyword (even without percentage)
+            # ⭐ NEW - for "Rates and premiums in this quote are VAT exclusive"
+            # ═══════════════════════════════════════════════════════════════
+            r'vat\s+exclusive',  # "VAT exclusive", "VAT Exclusive"
+            r'rates.*vat\s+exclusive',  # "Rates are VAT exclusive"
+            r'premium.*vat\s+exclusive',  # "Premium is VAT exclusive"
+            r'quote.*vat\s+exclusive',  # "Quote is VAT exclusive"
+            r'prices.*vat\s+exclusive',  # "Prices are VAT exclusive"
+
+            # ═══════════════════════════════════════════════════════════════
+            # CATEGORY 5: Ultra-flexible fallback (catches ANY VAT + number combo)
             # ═══════════════════════════════════════════════════════════════
             # Note: Case-insensitive matching already enabled via re.IGNORECASE flag
             r'VAT.*?\d+\.?\d*\s*%',  # VAT followed by any text then percentage
@@ -1538,6 +1552,26 @@ def _classify_vat_structure(prem_info: Dict, text: str = "", vat_signal_type: st
                     logger.info("✅ VAT Classification: P2 (VAT-exclusive - FINANCIAL_LINE_ITEM)")
                     logger.info("   VAT line with amount found in document text")
                     return ("P2", "FINANCIAL_LINE_ITEM", "document_vat_line_pattern", False)
+
+        # Indicator 4: "VAT Exclusive" keyword without specific percentage ⭐ NEW
+        # For "Rates and premiums in this quote are VAT exclusive"
+        if text:
+            vat_exclusive_patterns = [
+                r'vat\s+exclusive',
+                r'rates.*vat\s+exclusive',
+                r'premium.*vat\s+exclusive',
+                r'quote.*vat\s+exclusive',
+                r'prices.*vat\s+exclusive',
+            ]
+
+            search_text = text[:15000] if len(text) > 15000 else text
+
+            for pattern in vat_exclusive_patterns:
+                if re.search(pattern, search_text, re.IGNORECASE):
+                    logger.info("✅ VAT Classification: P2 (VAT-exclusive - FINANCIAL_LINE_ITEM)")
+                    logger.info(f"   'VAT Exclusive' keyword found in document")
+                    logger.info("   No specific rate mentioned - defaulting to Saudi standard: 15%")
+                    return ("P2", "FINANCIAL_LINE_ITEM", "vat_exclusive_keyword", False)
 
     # ========================================================================
     # P4 DETECTION - ONLY TOTAL, NO BREAKDOWN
