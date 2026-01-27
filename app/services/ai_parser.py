@@ -1303,8 +1303,9 @@ def _detect_vat_signal_type(prem_info: Dict, text: str = "") -> str:
             # ═══════════════════════════════════════════════════════════════
             # CATEGORY 4: Ultra-flexible fallback (catches ANY VAT + number combo)
             # ═══════════════════════════════════════════════════════════════
-            r'(?i)VAT.*?\d+\.?\d*\s*%',  # VAT followed by any text then percentage
-            r'\d+\.?\d*\s*%.*?(?i)VAT',  # Percentage followed by any text then VAT (within 100 chars)
+            # Note: Case-insensitive matching already enabled via re.IGNORECASE flag
+            r'VAT.*?\d+\.?\d*\s*%',  # VAT followed by any text then percentage
+            r'\d+\.?\d*\s*%.*?VAT',  # Percentage followed by any text then VAT
         ]
         for pattern in financial_patterns:
             if re.search(pattern, text[:5000], re.IGNORECASE):
