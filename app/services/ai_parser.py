@@ -1261,12 +1261,23 @@ def _detect_vat_signal_type(prem_info: Dict, text: str = "") -> str:
     text_has_vat_patterns = False
     if text:
         financial_patterns = [
+            # Patterns with amounts
             r'VAT\s*\(?\s*\d+%?\s*\)?\s*:?\s*SAR?\s*[\d,]+',  # VAT (15%): SAR 1,500
             r'VAT\s*@?\s*\d+%\s*:?\s*SAR?\s*[\d,]+',  # VAT @ 15%: SAR 1,500
             r'Value Added Tax\s*:?\s*SAR?\s*[\d,]+',  # Value Added Tax: SAR 1,500
-            r'VAT\s*[\d,]+',  # VAT 1,500
             r'VAT\s*:?\s*SAR?\s*[\d,]+',  # VAT: SAR 1,500
-            r'VAT\s*\(?\s*\d+%?\s*\)?',  # VAT (15%) or VAT (15)
+            r'VAT\s+[\d,]+\s*SAR',  # VAT 1,500 SAR
+
+            # Patterns with percentages (FLEXIBLE - catches any VAT mention with %)
+            r'VAT\s*\(?\s*\d+\.?\d*\s*%\s*\)?',  # VAT (15%), VAT 69%, VAT (69 %)
+            r'VAT\s*:?\s*\d+\.?\d*\s*%',  # VAT: 15%, VAT 69%
+            r'\d+\.?\d*\s*%\s*VAT',  # 15% VAT, 69% VAT
+            r'VAT\s+Rate\s*:?\s*\d+\.?\d*\s*%',  # VAT Rate: 15%
+            r'VAT\s+Percentage\s*:?\s*\d+\.?\d*\s*%',  # VAT Percentage: 69%
+
+            # Generic VAT mentions with numbers nearby
+            r'VAT[:\s]+\d+',  # VAT: 15 or VAT 69
+            r'Value\s+Added\s+Tax[:\s]+\d+',  # Value Added Tax: 15
         ]
         for pattern in financial_patterns:
             if re.search(pattern, text[:5000], re.IGNORECASE):
