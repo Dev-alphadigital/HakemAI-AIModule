@@ -284,7 +284,7 @@ async def compare_insurance_quotes(
             # Parse with AI
             logger.info(f"🤖 Parsing with AI: {file.filename}")
             extracted_data = await ai_parser.extract_structured_data_from_text(
-                text_content, file_info["original_filename"]
+                text_content, file_info["original_filename"], file_info["file_path"]
             )
 
             # Collect: keep raw dict for response, model for ranker

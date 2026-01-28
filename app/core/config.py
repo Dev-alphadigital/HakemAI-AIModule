@@ -23,15 +23,15 @@ env_loaded = False
 for env_path in env_paths:
     if env_path.exists():
         load_dotenv(dotenv_path=env_path, override=True)  # override=True ensures it overwrites
-        print(f"✅ Loaded .env from: {env_path}")
+        print(f"[OK] Loaded .env from: {env_path}")
         env_loaded = True
         break
 
 if not env_loaded:
-    print(f"⚠️  No .env file found. Tried locations:")
+    print(f"[WARNING] No .env file found. Tried locations:")
     for path in env_paths:
         print(f"   - {path}")
-    print("⚠️  Using environment variables from system/PM2")
+    print("[WARNING] Using environment variables from system/PM2")
 
 
 class Settings(BaseSettings):
@@ -72,6 +72,13 @@ class Settings(BaseSettings):
     # Logo Extraction Settings
     ENABLE_LOGO_EXTRACTION: bool = True
     MAX_LOGO_SIZE: int = 500 * 1024  # 500KB max for logos
+
+    # Azure Computer Vision OCR Settings
+    AZURE_VISION_ENDPOINT: str = os.getenv("AZURE_CV_ENDPOINT", "")
+    AZURE_VISION_KEY: str = os.getenv("AZURE_CV_KEY_1", "")
+    ENABLE_OCR_FALLBACK: bool = os.getenv("ENABLE_OCR_FALLBACK", "true").lower() == "true"
+    OCR_MAX_DAILY_CALLS: int = int(os.getenv("OCR_MAX_DAILY_CALLS", "100"))
+    OCR_COOLDOWN_SECONDS: int = int(os.getenv("OCR_COOLDOWN_SECONDS", "60"))
 
     # Storage Settings
     ENABLE_STORAGE: bool = os.getenv("ENABLE_STORAGE", "false").lower() == "true"
