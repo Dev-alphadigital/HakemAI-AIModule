@@ -246,15 +246,34 @@ def _normalize_premium(premium_value: Any) -> float:
 
 def _get_normalized_premium_for_comparison(quote: ExtractedQuoteData) -> float:
     """
-    Get premium amount normalized to VAT-exclusive for fair comparison.
-    All premiums are stored as VAT-exclusive, so this just normalizes the value.
-    
+    Get premium amount normalized for fair comparison across different VAT classes.
+
+    VAT Class Handling:
+    - P1 (VAT-inclusive): Use stated premium as-is (VAT already included)
+    - P2 (VAT-exclusive): Use stated premium as-is (VAT shown separately)
+    - P3 (VAT-deferred): Use stated premium as-is (VAT charged at billing)
+
     Returns:
-        Premium amount (VAT-exclusive) for comparison purposes
+        Premium amount for comparison purposes
     """
     premium = _normalize_premium(quote.premium_amount) or 0
-    
-    # If premium_amount is None/0 but total_annual_cost exists, 
+
+    # P3 handling: Use stated premium (VAT not in quote)
+    if hasattr(quote, 'vat_class') and quote.vat_class == "P3":
+        logger.info(f"P3 quote ({quote.company_name}): Using stated premium {premium} (VAT deferred to billing)")
+        return premium
+
+    # P1 handling: Use stated premium (VAT already included)
+    if hasattr(quote, 'vat_class') and quote.vat_class == "P1":
+        logger.info(f"P1 quote ({quote.company_name}): Using stated premium {premium} (VAT inclusive)")
+        return premium
+
+    # P2 handling: Use stated premium (VAT shown separately)
+    if hasattr(quote, 'vat_class') and quote.vat_class == "P2":
+        logger.info(f"P2 quote ({quote.company_name}): Using stated premium {premium} (VAT exclusive)")
+        return premium
+
+    # Fallback: If premium_amount is None/0 but total_annual_cost exists,
     # extract base premium (this shouldn't happen after parser fix, but safety check)
     if premium == 0 and quote.total_annual_cost:
         # Assume 15% VAT and try to extract base
@@ -263,7 +282,7 @@ def _get_normalized_premium_for_comparison(quote: ExtractedQuoteData) -> float:
             # Approximate: total = base * 1.15, so base = total / 1.15
             premium = total / 1.15
             logger.warning(f"⚠️ Extracted base premium from total for {quote.company_name}")
-    
+
     return premium
 
 
@@ -1485,8 +1504,24 @@ async def rank_and_compare_quotes(
     if not quotes:
         raise AIRankingError("No quotes provided")
     
-    if len(quotes) == 1:
-        return _create_single_quote_comparison(quotes[0], comparison_id=comparison_id)
+    # Filter out rejected quotes (safety check - should not happen if routes.py filters correctly)
+    valid_quotes = [
+        q for q in quotes 
+        if getattr(q, 'quote_status', 'accepted') == 'accepted'
+    ]
+    
+    rejected_count = len(quotes) - len(valid_quotes)
+    if rejected_count > 0:
+        logger.warning(f"⚠️ Ranker: Filtered out {rejected_count} rejected quote(s)")
+    
+    if not valid_quotes:
+        raise AIRankingError("No valid (accepted) quotes to rank - all quotes were rejected")
+    
+    if len(valid_quotes) == 1:
+        return _create_single_quote_comparison(valid_quotes[0], comparison_id=comparison_id)
+    
+    # Use valid_quotes for all subsequent processing
+    quotes = valid_quotes
     
     if weights is None:
         weights = DEFAULT_WEIGHTS.copy()

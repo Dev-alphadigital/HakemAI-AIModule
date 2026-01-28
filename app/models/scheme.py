@@ -33,6 +33,12 @@ class ExtractedQuoteData(BaseModel):
     vat_percentage: Optional[float] = Field(None, description="VAT percentage applied (default 15%)")
     premium_includes_vat: Optional[bool] = Field(False, description="Whether original premium included VAT (always False after normalization)")
     
+    # Quote Status & VAT Classification (v8.1 - Signal-Based Enforcement)
+    quote_status: Optional[str] = Field("accepted", description="Quote status: 'accepted' | 'rejected'")
+    rejection_reason: Optional[str] = Field(None, description="Reason for rejection if quote_status is 'rejected'")
+    vat_signal_type: Optional[str] = Field(None, description="VAT signal type: FINANCIAL_LINE_ITEM | PRICE_ANNOTATION | LEGAL_CLAUSE | NONE")
+    vat_class: Optional[str] = Field(None, description="VAT classification: P1 (VAT-inclusive) | P2 (VAT-exclusive) | P3 (VAT-deferred) | P5/P6 (disallowed)")
+    
     # Coverage Details
     score: Optional[float] = Field(None, description="Overall quality score 0-100")
     

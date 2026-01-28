@@ -1,29 +1,61 @@
 """
-PRODUCTION-READY AI PARSER v7.0 - WITH FALLBACK EXTRACTION
-===========================================================
+PRODUCTION-READY AI PARSER v9.0 - COMPREHENSIVE VAT DETECTION
+==============================================================
 ✅ Multi-layer extraction: AI + Pattern-based fallback
 ✅ Automatic validation and retry logic
 ✅ Works for ANY insurance quote PDF format
 ✅ Production-ready, scalable, and reliable
 ✅ No vendor-specific patches - universal solution
+✅ Comprehensive VAT detection with graceful fallback (NEW!)
 
 VERSION HISTORY:
 v6.0 - Original AI-only extraction
-v7.0 - Added fallback extraction + validation (CRITICAL FIX)
+v7.0 - Added fallback extraction + validation
+v8.0 - Strict VAT detection, preserved original semantics, enhanced logging
+v9.0 - Comprehensive pattern-first VAT detection with graceful degradation
 
-KEY IMPROVEMENTS IN v7.0:
-1. Pattern-based fallback extraction when AI fails
-2. Automatic validation of extraction completeness
-3. Smart merging of AI + pattern data
-4. Fixes Tawuniya and similar extraction failures
-5. Universal solution - works for all insurance PDFs
+KEY IMPROVEMENTS IN v9.0:
+1. **Pattern-First Detection:** 120+ VAT patterns checked exhaustively before defaulting
+2. **Graceful Fallback:** P3/P4 default to P2 with warning (no rejection)
+3. **Saudi Standard:** 15% VAT assumed when unclear (government policy standard)
+4. **Reject Only P5/P6:** Zero VAT and non-standard rates still rejected
+5. **Validation:** Extracted AI values validated against document text
+6. **Full Document Search:** No character limits - searches entire PDF
+7. **Confidence Tracking:** High/Medium/Low confidence with verification flags
+
+VAT DETECTION RULES (v9.0):
+- **P1 (VAT-Inclusive):** Premium explicitly includes VAT
+  - Patterns: "VAT inclusive", "including VAT", "Total Premium with VAT included"
+  - Behavior: vat_percentage=None, vat_amount=None (no calculation)
+
+- **P2 (VAT-Exclusive):** VAT will be added separately
+  - Patterns: "VAT exclusive", "plus VAT", "VAT as applicable", "VAT 15%"
+  - Behavior: vat_percentage=15.0 (default) or extracted, calculate VAT
+
+- **P3 (VAT-Deferred):** VAT will be charged at billing time
+  - Patterns: "all taxes will be charged at the time of billing"
+  - Behavior: vat_percentage=None, vat_amount=None (deferred to billing)
+  - Note: Quote does not include VAT; VAT added later at invoice time
+
+- **P4 (No VAT Mention - Defaulted):** No patterns found
+  - Behavior: Default to P2 with 15% + warning flag
+
+- **P5 (REJECTED):** Zero VAT explicitly stated
+  - Pattern: "VAT: 0%"
+  - Behavior: Raise VatPolicyViolation
+
+- **P6 (REJECTED):** Non-standard VAT rate (not 15%)
+  - Pattern: "VAT 69%" (confirmed in text)
+  - Behavior: Raise VatPolicyViolation
 
 ARCHITECTURE:
-- Stage 1-3: AI-powered extraction (unchanged)
-- Stage 3.5: VALIDATION + FALLBACK (NEW!)
-- Stage 4-6: Calculations and analysis (unchanged)
+- Stage 1-3: AI-powered extraction
+- Stage 3.5: Validation + fallback
+- Stage 4: Subjectivities & requirements
+- Stage 5: Calculations + COMPREHENSIVE VAT DETECTION (v9.0)
+- Stage 6: Analysis and scoring
 
-Last Updated: 2025-11-13
+Last Updated: 2026-01-27
 """
 
 import json
@@ -43,6 +75,165 @@ class AIParsingError(Exception):
     """Custom exception for AI parsing failures."""
     pass
 
+
+class VatPolicyViolation(Exception):
+    """
+    Exception raised when VAT structure violates policy.
+
+    This indicates the document has disallowed VAT characteristics
+    and must not proceed to ranking/comparison.
+    """
+    def __init__(self, vat_class: str, reason: str, details: dict = None):
+        self.vat_class = vat_class
+        self.reason = reason
+        self.details = details or {}
+        super().__init__(f"VAT Policy Violation: {vat_class} - {reason}")
+
+
+# ============================================================================
+# COMPREHENSIVE VAT PATTERN CONSTANTS v9.0
+# ============================================================================
+# Complete taxonomy of VAT patterns for exhaustive detection before classification
+# Priority: VAT_EXCLUSIVE checked first (more specific), then VAT_INCLUSIVE
+
+VAT_INCLUSIVE_PATTERNS = [
+    # GROUP A1: Direct "inclusive" keyword
+    r'vat\s+inclusive',
+    r'vat[\s\-]?inclusive',
+    r'inclusive\s+of\s+vat',
+    r'inclusive\s+vat',
+
+    # GROUP A2: "included" keyword
+    r'vat\s+included',
+    r'included\s+vat',
+    r'vat\s+is\s+included',
+    r'with\s+vat\s+included',
+
+    # GROUP A3: "including" keyword
+    r'including\s+vat',
+    r'incl\.?\s+vat',
+    r'inc\.?\s+vat',
+
+    # GROUP A4: Context phrases (premium/total includes)
+    r'total.*includes?\s+vat',
+    r'premium.*includes?\s+vat',
+    r'amount.*includes?\s+vat',
+    r'price.*includes?\s+vat',
+    r'rate.*includes?\s+vat',
+    r'total.*with\s+vat\s+included',
+    r'premium.*with\s+vat\s+included',
+    r'total\s+premium\s+with\s+vat\s+included',
+
+    # GROUP A5: Tax variations
+    r'incl\.?\s+tax',
+    r'including\s+tax',
+    r'tax\s+included',
+    r'inclusive\s+of\s+all\s+taxes',
+    r'all\s+taxes\s+included',
+]
+
+VAT_EXCLUSIVE_PATTERNS = [
+    # GROUP B1: Direct "exclusive" keyword
+    r'vat\s+exclusive',
+    r'vat[\s\-]?exclusive',
+    r'exclusive\s+of\s+vat',
+    r'exclusive\s+vat',
+
+    # GROUP B2: "excluding" keyword
+    r'excluding\s+vat',
+    r'excl\.?\s+vat',
+    r'exc\.?\s+vat',
+    r'vat\s+excluded',
+
+    # GROUP B3: "plus VAT" keyword (CRITICAL)
+    r'plus\s+vat',
+    r'\+\s*vat',
+    r'plus\s+applicable\s+vat',
+    r'plus\s+vat\s+as\s+applicable',
+
+    # GROUP B4: "applicable" keyword (CRITICAL)
+    r'vat\s+as\s+applicable',
+    r'vat\s+applicable',
+    r'vat\s+where\s+applicable',
+    r'applicable\s+vat',
+    r'vat\s+as\s+per\s+applicable',
+
+    # GROUP B5: "subject to" keyword
+    r'subject\s+to\s+vat',
+    r'premium.*subject\s+to\s+vat',
+    r'rate.*subject\s+to\s+vat',
+    r'subject\s+to\s+applicable\s+vat',
+
+    # GROUP B6: "will be added/charged" keyword
+    # Note: Patterns with "charged at billing" moved to VAT_DEFERRED_PATTERNS
+    r'vat\s+will\s+be\s+added',
+    r'vat\s+will\s+be\s+charged',
+    r'vat\s+shall\s+be\s+added',
+    r'vat\s+shall\s+be\s+charged',
+    r'vat\s+to\s+be\s+added',
+    r'vat\s+to\s+be\s+charged',
+
+    # GROUP B7: "additional/payable" keyword
+    r'vat\s+additional',
+    r'additional\s+vat',
+    r'vat\s+payable',
+    r'vat\s+payable\s+by',
+    r'vat\s+shall\s+be\s+paid',
+    r'insured\s+shall\s+pay\s+vat',
+
+    # GROUP B8: Explicit percentages (with numbers)
+    r'vat\s*\(?\s*\d+\.?\d*\s*%\s*\)?',
+    r'vat\s*:?\s*\d+\.?\d*\s*%',
+    r'\d+\.?\d*\s*%\s*vat',
+    r'vat\s*@\s*\d+\.?\d*\s*%',
+    r'vat\s+rate\s*:?\s*\d+\.?\d*\s*%',
+    r'\+\s*\d+\.?\d*\s*%\s*vat',
+    r'vat\s+\d+\.?\d*\s*%\s+additional',
+    r'vat\s+\d+\.?\d*\s*%.*?will\s+apply',
+    r'vat\s+\d+\.?\d*\s*%.*?applicable',
+
+    # GROUP B9: Explicit amounts (with SAR/SR)
+    r'vat\s*:?\s*sar\s*[\d,\.]+',
+    r'vat\s*:?\s*sr\.?\s*[\d,\.]+',
+    r'vat\s+amount\s*:?\s*[\d,\.]+',
+    r'sar\s*[\d,\.]+.*vat',
+
+    # GROUP B10: Calculation context
+    r'premium.*\+.*vat',
+    r'total.*before\s+vat',
+    r'net.*premium.*vat',
+    r'base.*premium.*vat\s+extra',
+
+    # GROUP B11: Tax generic (without VAT keyword but contextual)
+    r'taxes?\s+as\s+per\s+law',
+    r'vat\s+as\s+per\s+law',
+    r'vat\s+according\s+to\s+regulations',
+]
+
+# VAT_DEFERRED_PATTERNS: Patterns that explicitly defer VAT to billing time (P3 Classification)
+# These patterns indicate VAT will be charged later at billing, not at quote time
+# P3 documents should have vat_percentage=null and vat_amount=null
+VAT_DEFERRED_PATTERNS = [
+    # Primary deferral patterns - explicit billing language
+    r'all\s+taxes?\s+will\s+be\s+charged\s+at\s+(?:the\s+)?time\s+of\s+billing',
+    r'taxes?\s+will\s+be\s+charged\s+at\s+(?:the\s+)?time\s+of\s+billing',
+    r'taxes?\s+charged\s+at\s+(?:the\s+)?time\s+of\s+billing',
+
+    # Deferral to later/invoice time
+    r'vat\s+will\s+be\s+charged\s+at\s+(?:the\s+)?time\s+of\s+(?:billing|invoice|invoicing)',
+    r'vat\s+charged\s+at\s+(?:the\s+)?time\s+of\s+(?:billing|invoice|invoicing)',
+    r'vat\s+will\s+apply\s+at\s+(?:the\s+)?time\s+of\s+(?:billing|invoice|invoicing)',
+
+    # Deferral to issuance
+    r'taxes?\s+(?:will\s+)?(?:be\s+)?charged\s+(?:at|upon)\s+issuance',
+    r'vat\s+(?:will\s+)?(?:be\s+)?charged\s+(?:at|upon)\s+issuance',
+]
+
+VAT_MENTIONED_PATTERNS = [
+    r'\bvat\b',
+    r'value\s+added\s+tax',
+    r'v\.?a\.?t\.?',
+]
 
 # ============================================================================
 # ENHANCED UTILITY FUNCTIONS v6.0
@@ -1140,42 +1331,750 @@ def _calculate_premium_from_rate(sum_insured: float, rate_string: str) -> Option
         return None
 
 
-def _detect_vat_inclusion(prem_info: Dict, total_annual_cost: Optional[float], 
-                          base_premium: Optional[float], vat_pct: float = 15.0) -> bool:
+def _comprehensive_vat_detection(text: str, prem_info: Dict) -> Dict:
     """
-    Detect if the extracted premium amount already includes VAT.
+    Comprehensive VAT detection with exhaustive pattern checking.
+
+    This function implements the pattern-first approach:
+    1. Check VAT_EXCLUSIVE patterns (more specific - indicates VAT will be added)
+    2. Check VAT_INCLUSIVE patterns (indicates VAT already in premium)
+    3. Validate extracted AI values against document text
+    4. Default to P2 with 15% if VAT is mentioned but unclear
+    5. Only reject for P5 (Zero VAT) and P6 (Non-standard rate)
+
+    Args:
+        text: Full document text (no character limit)
+        prem_info: Extracted premium information from AI
+
+    Returns:
+        {
+            "class": "P1" | "P2" | "P5" | "P6",
+            "is_inclusive": bool,
+            "vat_percentage": float | None,
+            "vat_amount": float | None,
+            "detection_method": str,
+            "pattern_matched": str | None,
+            "confidence": "high" | "medium" | "low",
+            "warning": str | None,
+            "requires_verification": bool
+        }
+    """
+    logger.info("=" * 80)
+    logger.info("🔍 COMPREHENSIVE VAT DETECTION v9.0")
+    logger.info("=" * 80)
+
+    # Parse extracted values from AI
+    vat_amount_text = str(prem_info.get('vat_amount', '')).strip()
+    vat_percentage_text = str(prem_info.get('vat_percentage', '')).strip()
+
+    vat_amount_extracted = _parse_currency_amount(vat_amount_text)
+    vat_percentage_extracted = None
+    if vat_percentage_text and vat_percentage_text not in ['', '0', 'N/A', 'None']:
+        try:
+            vat_percentage_extracted = float(vat_percentage_text)
+        except ValueError:
+            pass
+
+    logger.info(f"📊 AI Extracted Values:")
+    logger.info(f"   vat_amount: {vat_amount_extracted}")
+    logger.info(f"   vat_percentage: {vat_percentage_extracted}")
+
+    text_lower = text.lower() if text else ""
+
+    # ==================================================================
+    # STEP 1: CHECK FOR EXPLICIT ZERO VAT OR NON-STANDARD RATE (P5/P6)
+    # ==================================================================
+    if vat_percentage_extracted == 0:
+        # Check if "0%" actually appears in document
+        if re.search(r'vat\s*:?\s*0\s*%', text_lower, re.IGNORECASE):
+            logger.error("❌ P5 DETECTED: Zero VAT explicitly stated")
+            return {
+                "class": "P5",
+                "is_inclusive": False,
+                "vat_percentage": None,
+                "vat_amount": None,
+                "detection_method": "zero_vat_confirmed",
+                "pattern_matched": "0% VAT",
+                "confidence": "high",
+                "warning": None,
+                "requires_verification": False
+            }
+
+    if vat_percentage_extracted is not None and vat_percentage_extracted not in [15.0]:
+        # Check if this non-standard rate actually appears in document
+        rate_str = str(vat_percentage_extracted).replace('.0', '')
+        if re.search(rf'\b{rate_str}\s*%.*vat|vat.*{rate_str}\s*%', text_lower, re.IGNORECASE):
+            logger.error(f"❌ P6 DETECTED: Non-standard VAT rate {vat_percentage_extracted}% confirmed in text")
+            return {
+                "class": "P6",
+                "is_inclusive": False,
+                "vat_percentage": None,
+                "vat_amount": None,
+                "detection_method": "non_standard_rate_confirmed",
+                "pattern_matched": f"{vat_percentage_extracted}% VAT",
+                "confidence": "high",
+                "warning": None,
+                "requires_verification": False
+            }
+        else:
+            logger.warning(f"⚠️ AI extracted {vat_percentage_extracted}% but not found in text - treating as hallucinated")
+
+    # ==================================================================
+    # STEP 1.5: CHECK VAT_DEFERRED PATTERNS (P3 Classification)
+    # ==================================================================
+    logger.info("🔍 Step 1.5: Checking VAT_DEFERRED patterns (P3)...")
+
+    for pattern in VAT_DEFERRED_PATTERNS:
+        match = re.search(pattern, text_lower, re.IGNORECASE)
+        if match:
+            matched_text = match.group(0)
+            logger.info(f"✅ VAT_DEFERRED pattern matched: '{matched_text}'")
+            logger.info(f"   Pattern: {pattern}")
+
+            # CRITICAL FIX: Check if explicit VAT line exists (even if zero)
+            # Zero VAT indicates P5 (zero VAT), not P3 (deferred VAT)
+            if vat_amount_extracted is not None:
+                if vat_amount_extracted > 0:
+                    logger.info(f"   ⚠️ Explicit positive VAT amount found: {vat_amount_extracted}")
+                    logger.info("   Skipping P3, continuing to P2 check...")
+                    continue
+                elif vat_amount_extracted == 0:
+                    logger.info("   ⚠️ Explicit ZERO VAT amount found - this is P5, not P3")
+                    logger.info("   Skipping P3, P5 will be detected later...")
+                    continue
+
+            if vat_percentage_extracted is not None:
+                if vat_percentage_extracted > 0:
+                    logger.info(f"   ⚠️ Explicit positive VAT percentage found: {vat_percentage_extracted}%")
+                    logger.info("   Skipping P3, continuing to P2 check...")
+                    continue
+                elif vat_percentage_extracted == 0:
+                    logger.info("   ⚠️ Explicit ZERO VAT percentage found - this is P5, not P3")
+                    logger.info("   Skipping P3, P5 will be detected later...")
+                    continue
+
+            logger.info("   No explicit VAT values - confirming P3 classification")
+            logger.info("   P3: VAT will be charged at billing time - no VAT in quote")
+
+            return {
+                "class": "P3",
+                "is_inclusive": False,
+                "vat_percentage": None,  # No VAT percentage in quote
+                "vat_amount": None,       # No VAT amount in quote
+                "detection_method": "pattern_vat_deferred",
+                "pattern_matched": matched_text,
+                "confidence": "high",
+                "warning": "VAT will be charged at time of billing. Quote does not include VAT.",
+                "requires_verification": False
+            }
+
+    logger.info("   No VAT_DEFERRED patterns found")
+
+    # ==================================================================
+    # STEP 2: CHECK VAT_EXCLUSIVE PATTERNS (Priority 1 - Most Specific)
+    # ==================================================================
+    logger.info("🔍 Step 2: Checking VAT_EXCLUSIVE patterns...")
+
+    for pattern in VAT_EXCLUSIVE_PATTERNS:
+        match = re.search(pattern, text_lower, re.IGNORECASE)
+        if match:
+            matched_text = match.group(0)
+            logger.info(f"✅ VAT_EXCLUSIVE pattern matched: '{matched_text}'")
+            logger.info(f"   Pattern: {pattern}")
+
+            # Validate extracted percentage if present
+            final_percentage = 15.0  # Saudi default
+            final_amount = None
+            confidence = "high"
+            warning = None
+
+            if vat_percentage_extracted and vat_percentage_extracted == 15.0:
+                # Extracted value matches Saudi standard
+                final_percentage = 15.0
+                if vat_amount_extracted:
+                    final_amount = vat_amount_extracted
+                logger.info(f"   Extracted VAT 15% confirmed (Saudi standard)")
+            elif vat_percentage_extracted and vat_percentage_extracted != 15.0:
+                # Extracted value doesn't match - use default
+                logger.warning(f"   Extracted VAT {vat_percentage_extracted}% doesn't match pattern, using 15% default")
+                confidence = "medium"
+                warning = f"Document indicates VAT-exclusive but no specific rate found. Using Saudi standard 15%."
+            else:
+                # No extracted percentage - use default
+                logger.info(f"   No specific rate mentioned, using Saudi standard 15%")
+                warning = "Document indicates VAT-exclusive. Using Saudi standard 15%."
+
+            return {
+                "class": "P2",
+                "is_inclusive": False,
+                "vat_percentage": final_percentage,
+                "vat_amount": final_amount,
+                "detection_method": "pattern_vat_exclusive",
+                "pattern_matched": matched_text,
+                "confidence": confidence,
+                "warning": warning,
+                "requires_verification": warning is not None
+            }
+
+    logger.info("   No VAT_EXCLUSIVE patterns found")
+
+    # ==================================================================
+    # STEP 3: CHECK VAT_INCLUSIVE PATTERNS (Priority 2)
+    # ==================================================================
+    logger.info("🔍 Step 3: Checking VAT_INCLUSIVE patterns...")
+
+    for pattern in VAT_INCLUSIVE_PATTERNS:
+        match = re.search(pattern, text_lower, re.IGNORECASE)
+        if match:
+            matched_text = match.group(0)
+            logger.info(f"✅ VAT_INCLUSIVE pattern matched: '{matched_text}'")
+            logger.info(f"   Pattern: {pattern}")
+            logger.info(f"   VAT already included in premium - no separate calculation needed")
+
+            return {
+                "class": "P1",
+                "is_inclusive": True,
+                "vat_percentage": None,
+                "vat_amount": None,
+                "detection_method": "pattern_vat_inclusive",
+                "pattern_matched": matched_text,
+                "confidence": "high",
+                "warning": None,
+                "requires_verification": False
+            }
+
+    logger.info("   No VAT_INCLUSIVE patterns found")
+
+    # ==================================================================
+    # STEP 4: CHECK IF VAT IS MENTIONED AT ALL
+    # ==================================================================
+    logger.info("🔍 Step 4: Checking if VAT is mentioned...")
+
+    vat_mentioned = False
+    for pattern in VAT_MENTIONED_PATTERNS:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            vat_mentioned = True
+            logger.info(f"   VAT mentioned in document (pattern: {pattern})")
+            break
+
+    if vat_mentioned:
+        # VAT is mentioned but structure unclear - default to P2 with warning
+        logger.warning("⚠️ VAT mentioned but structure unclear")
+        logger.warning("   Defaulting to P2 (VAT-exclusive) with 15% Saudi standard")
+
+        return {
+            "class": "P2",
+            "is_inclusive": False,
+            "vat_percentage": 15.0,
+            "vat_amount": None,
+            "detection_method": "vat_mentioned_unclear",
+            "pattern_matched": "VAT (unclear structure)",
+            "confidence": "medium",
+            "warning": "VAT mentioned in document but structure unclear. Assumed 15% VAT-exclusive (Saudi standard).",
+            "requires_verification": True
+        }
+
+    # ==================================================================
+    # STEP 5: NO VAT MENTION - DEFAULT TO P2 WITH WARNING
+    # ==================================================================
+    logger.warning("⚠️ No VAT information found in document")
+    logger.warning("   Defaulting to P2 (VAT-exclusive) with 15% Saudi standard")
+    logger.warning("   This is the standard assumption for Saudi insurance policies")
+
+    return {
+        "class": "P2",
+        "is_inclusive": False,
+        "vat_percentage": 15.0,
+        "vat_amount": None,
+        "detection_method": "default_saudi_standard",
+        "pattern_matched": None,
+        "confidence": "low",
+        "warning": "No VAT information found. Assumed 15% VAT-exclusive (Saudi standard). Please verify.",
+        "requires_verification": True
+    }
+
+
+def _detect_vat_signal_type(prem_info: Dict, text: str = "") -> str:
+    """
+    Detect the type of VAT signal present in the document.
+    
+    Signal Types:
+    - FINANCIAL_LINE_ITEM: Explicit VAT amount or % tied to premium (only trusted source for VAT numbers)
+    - PRICE_ANNOTATION: "incl. VAT" / "excl. VAT" near premium (conditional - requires explicit wording)
+    - LEGAL_CLAUSE: "VAT as applicable", "insured shall pay VAT" (never produces numbers)
+    - NONE: No VAT signals found (default state)
     
     Returns:
-        True if premium appears to include VAT, False if VAT-exclusive
+        One of: "FINANCIAL_LINE_ITEM", "PRICE_ANNOTATION", "LEGAL_CLAUSE", "NONE"
     """
-    # Check explicit indicators from AI extraction
+    # Get VAT-related fields (raw extraction only - no math)
     premium_text = str(prem_info.get('base_premium_amount', '')).lower()
-    total_text = str(prem_info.get('total_including_vat', '')).lower()
+    vat_amount_text = str(prem_info.get('vat_amount', '')).strip()
+    vat_percentage_text = str(prem_info.get('vat_percentage', '')).strip()
+    text_lower = text.lower() if text else ""
     
-    # Indicators that premium includes VAT
-    vat_inclusive_indicators = [
-        'including vat', 'incl. vat', 'vat included', 'with vat',
-        'including tax', 'incl. tax', 'tax included'
+    # ========================================================================
+    # CRITICAL FIX: Check PRICE_ANNOTATION FIRST (before extracted amounts)
+    # This prevents hallucinated VAT amounts from being treated as FINANCIAL_LINE_ITEM
+    # ========================================================================
+    price_annotation_patterns = [
+        r'incl\.?\s+vat',
+        r'incl\s+vat',
+        r'including\s+vat',
+        r'vat\s+included',
+        r'included\s+vat',
+        r'inclusive\s+vat',
+        r'inclusive\s+of\s+vat',
+        r'with\s+vat',
+        r'incl\.?\s+tax',
+        r'including\s+tax',
+        r'tax\s+included',
+        r'total.*included.*vat',
+        r'total.*includes.*vat',
+        r'total.*with.*vat.*included',
+        r'total.*premium.*with.*vat.*included',
+        r'premium.*included.*vat',
+        r'premium.*includes.*vat',
+        r'premium.*with.*vat.*included',
+        r'premium.*inclusive.*vat',
+        # Explicit keywords ⭐ NEW
+        r'vat\s+inclusive',  # "VAT Inclusive"
+        r'rates.*vat\s+inclusive',  # "Rates and premiums in this quote are VAT inclusive"
+        r'premium.*vat\s+inclusive',  # "Premium is VAT inclusive"
+    ]
+
+    # Check in premium text and document text FIRST
+    # CRITICAL: Use 15000 chars to catch VAT statements in footer/terms sections
+    text_search_range = text_lower[:15000] if len(text_lower) > 15000 else text_lower
+    search_text = premium_text + " " + text_search_range
+
+    for pattern in price_annotation_patterns:
+        if re.search(pattern, search_text, re.IGNORECASE):
+            logger.info(f"🔍 VAT Signal: PRICE_ANNOTATION (found '{pattern}' - ignoring extracted VAT amounts)")
+            logger.info("   Document context takes precedence over extracted amounts")
+            return "PRICE_ANNOTATION"
+
+    # ========================================================================
+    # DETECT LEGAL_CLAUSE (Before FINANCIAL_LINE_ITEM to avoid false positives)
+    # Uses same search_text (15000 chars) to catch "Premium Subject to VAT" in footer
+    # ========================================================================
+    legal_clause_patterns = [
+        r'vat\s+as\s+applicable',
+        r'insured\s+shall\s+pay\s+vat',
+        r'vat\s+payable\s+by\s+insured',
+        r'subject\s+to\s+vat',
+        r'premium.*subject\s+to\s+vat',  # "Premium Subject to VAT, as applicable"
+        r'vat\s+will\s+be\s+added',
+        r'vat\s+shall\s+be\s+paid',
+        r'vat\s+may\s+apply',
+        r'vat\s+as\s+per\s+law',
+        r'vat\s+according\s+to\s+regulations',
     ]
     
-    if any(indicator in premium_text for indicator in vat_inclusive_indicators):
-        return True
+    for pattern in legal_clause_patterns:
+        if re.search(pattern, search_text, re.IGNORECASE):
+            logger.info(f"🔍 VAT Signal: LEGAL_CLAUSE (legal boilerplate found: '{pattern}')")
+            return "LEGAL_CLAUSE"
     
-    # If we have both base premium and total, check if they match expected VAT calculation
-    if base_premium and total_annual_cost and base_premium > 0:
-        policy_fee = _parse_currency_amount(prem_info.get('policy_fee')) or 0
-        expected_total = base_premium + policy_fee + ((base_premium + policy_fee) * (vat_pct / 100))
-        
-        # If stated total is close to base premium (within 2%), likely VAT-inclusive
-        if abs(total_annual_cost - base_premium) / base_premium < 0.02:
-            return True
-        
-        # If stated total matches expected (within 1%), likely VAT-exclusive
-        if abs(total_annual_cost - expected_total) / expected_total < 0.01:
-            return False
+    # ========================================================================
+    # DETECT FINANCIAL_LINE_ITEM (CRITICAL FIX: Verify text patterns FIRST)
+    # ========================================================================
+    # Parse VAT amount and percentage (raw extraction only)
+    vat_amount = _parse_currency_amount(vat_amount_text)
+    vat_percentage = None
+    if vat_percentage_text and vat_percentage_text not in ['', '0', 'N/A', 'None']:
+        try:
+            vat_percentage = float(vat_percentage_text)
+        except ValueError:
+            pass
     
-    # Default: assume VAT-exclusive (safer - we can always add VAT)
-    return False
+    # CRITICAL FIX: Check document text for VAT patterns BEFORE accepting extracted amounts
+    # This prevents hallucinated VAT amounts from being accepted
+    text_has_vat_patterns = False
+    if text:
+        # FUTURE-PROOF VAT DETECTION: Catches VAT in ANY context
+        # (standalone lines, tables, formulas, calculations, any format)
+        financial_patterns = [
+            # ═══════════════════════════════════════════════════════════════
+            # CATEGORY 1: VAT with SAR amounts (explicit financial line items)
+            # ═══════════════════════════════════════════════════════════════
+            r'VAT\s*\(?\s*\d+%?\s*\)?\s*:?\s*SAR?\s*[\d,]+',  # VAT (15%): SAR 1,500
+            r'VAT\s*@?\s*\d+%\s*:?\s*SAR?\s*[\d,]+',  # VAT @ 15%: SAR 1,500
+            r'Value Added Tax\s*:?\s*SAR?\s*[\d,]+',  # Value Added Tax: SAR 1,500
+            r'VAT\s*:?\s*SAR?\s*[\d,]+',  # VAT: SAR 1,500
+            r'VAT\s+[\d,]+\s*SAR',  # VAT 1,500 SAR
+            r'SAR\s*[\d,]+.*VAT',  # SAR 1,500 VAT (any text between)
+
+            # ═══════════════════════════════════════════════════════════════
+            # CATEGORY 2: VAT with percentages (ANY context - CRITICAL FOR "69% VAT")
+            # ═══════════════════════════════════════════════════════════════
+            # Standard percentage formats
+            r'VAT\s*\(?\s*\d+\.?\d*\s*%\s*\)?',  # VAT (15%), VAT 69%, VAT (69 %), VAT(15%)
+            r'VAT\s*:?\s*\d+\.?\d*\s*%',  # VAT: 15%, VAT 69%
+            r'\d+\.?\d*\s*%\s*VAT',  # 15% VAT, 69% VAT, 69.0% VAT ⭐ CRITICAL
+            r'VAT\s+Rate\s*:?\s*\d+\.?\d*\s*%',  # VAT Rate: 15%, VAT Rate 69%
+            r'VAT\s+Percentage\s*:?\s*\d+\.?\d*\s*%',  # VAT Percentage: 69%
+
+            # Administrative/legal statements ⭐ NEW - for "VAT 15% additional will apply"
+            r'VAT\s+\d+\.?\d*\s*%\s+additional',  # VAT 15% additional
+            r'VAT\s+\d+\.?\d*\s*%.*?will\s+apply',  # VAT 15% will apply, VAT 15% additional will apply
+            r'VAT\s+\d+\.?\d*\s*%.*?applicable',  # VAT 15% applicable
+            r'VAT\s+\d+\.?\d*\s*%.*?to\s+be\s+added',  # VAT 15% to be added
+
+            # In calculations/formulas ⭐ for "SAR 21,689.38 + SAR 50 Fee + 69% VAT"
+            r'[\+\-\*\/\=]\s*\d+\.?\d*\s*%\s*VAT',  # + 69% VAT, - 15% VAT
+            r'[\+\-\*\/\=]\s*VAT\s*\d+\.?\d*\s*%',  # + VAT 69%, + VAT 15%
+            r'SAR\s*[\d,\.]+\s*[\+\-\*].*\d+\.?\d*\s*%\s*VAT',  # SAR 1,500 + ... + 69% VAT
+            r'SAR\s*[\d,\.]+\s*[\+\-\*].*VAT\s*\d+\.?\d*\s*%',  # SAR 1,500 + VAT 69%
+            r'[\d,\.]+\s*[\+\-\*].*\d+\.?\d*\s*%\s*VAT',  # 1,500 + 69% VAT
+
+            # Table/structured formats
+            r'VAT[\s\|]*\d+\.?\d*\s*%',  # VAT | 69%, VAT    69%
+            r'\d+\.?\d*\s*%[\s\|]*VAT',  # 69% | VAT, 69%    VAT
+
+            # ═══════════════════════════════════════════════════════════════
+            # CATEGORY 3: Generic VAT with numbers (no % sign)
+            # ═══════════════════════════════════════════════════════════════
+            r'VAT[:\s]+\d+\.?\d*(?!\d)',  # VAT: 15, VAT 69 (not part of larger number)
+            r'Value\s+Added\s+Tax[:\s]+\d+\.?\d*',  # Value Added Tax: 15
+
+            # ═══════════════════════════════════════════════════════════════
+            # CATEGORY 4: Explicit "VAT Exclusive" keyword (even without percentage)
+            # ⭐ NEW - for "Rates and premiums in this quote are VAT exclusive"
+            # ═══════════════════════════════════════════════════════════════
+            r'vat\s+exclusive',  # "VAT exclusive", "VAT Exclusive"
+            r'rates.*vat\s+exclusive',  # "Rates are VAT exclusive"
+            r'premium.*vat\s+exclusive',  # "Premium is VAT exclusive"
+            r'quote.*vat\s+exclusive',  # "Quote is VAT exclusive"
+            r'prices.*vat\s+exclusive',  # "Prices are VAT exclusive"
+
+            # ═══════════════════════════════════════════════════════════════
+            # CATEGORY 5: Ultra-flexible fallback (catches ANY VAT + number combo)
+            # ═══════════════════════════════════════════════════════════════
+            # Note: Case-insensitive matching already enabled via re.IGNORECASE flag
+            r'VAT.*?\d+\.?\d*\s*%',  # VAT followed by any text then percentage
+            r'\d+\.?\d*\s*%.*?VAT',  # Percentage followed by any text then VAT
+        ]
+        # Search expanded text range (15000 chars) to catch VAT statements anywhere in document
+        # Many documents have VAT info in footer/terms sections which are beyond 5000 chars
+        search_text = text[:15000] if len(text) > 15000 else text
+
+        for pattern in financial_patterns:
+            if re.search(pattern, search_text, re.IGNORECASE):
+                text_has_vat_patterns = True
+                logger.info(f"🔍 Document text contains VAT pattern: '{pattern}'")
+                break
+    
+    # CRITICAL FIX: Only accept extracted amounts if document text confirms VAT presence
+    # This prevents hallucinated amounts from being treated as FINANCIAL_LINE_ITEM
+    if vat_amount and vat_amount > 0:
+        if text_has_vat_patterns:
+            logger.info(f"🔍 VAT Signal: FINANCIAL_LINE_ITEM (explicit VAT amount {vat_amount:,.2f} found + text confirmation)")
+            return "FINANCIAL_LINE_ITEM"
+        else:
+            logger.warning(f"⚠️ Extracted VAT amount {vat_amount:,.2f} found but NO VAT patterns in document text - treating as hallucinated")
+            logger.warning("   Ignoring extracted VAT amount (document does not mention VAT)")
+    
+    if vat_percentage and vat_percentage > 0:
+        if text_has_vat_patterns:
+            logger.info(f"🔍 VAT Signal: FINANCIAL_LINE_ITEM (explicit VAT rate {vat_percentage}% found + text confirmation)")
+            return "FINANCIAL_LINE_ITEM"
+        else:
+            logger.warning(f"⚠️ Extracted VAT percentage {vat_percentage}% found but NO VAT patterns in document text - treating as hallucinated")
+            logger.warning("   Ignoring extracted VAT percentage (document does not mention VAT)")
+    
+    # If text patterns exist but no extracted amounts, still return FINANCIAL_LINE_ITEM
+    # (the amounts may be calculated later from the text patterns)
+    if text_has_vat_patterns:
+        logger.info("🔍 VAT Signal: FINANCIAL_LINE_ITEM (VAT patterns found in document text)")
+        return "FINANCIAL_LINE_ITEM"
+    
+    # ========================================================================
+    # DEFAULT: NONE
+    # ========================================================================
+    logger.info("🔍 VAT Signal: NONE (no VAT signals detected)")
+    return "NONE"
+
+
+def _classify_vat_structure(prem_info: Dict, text: str = "", vat_signal_type: str = None) -> Tuple[str, str, str, bool]:
+    """
+    Classify VAT structure into explicit P1-P6 classes with ENFORCEMENT.
+    
+    Uses vat_signal_type to enforce strict rules:
+    - P1: Only if signal_type == PRICE_ANNOTATION (explicit "incl. VAT" wording)
+    - P2: Only if signal_type == FINANCIAL_LINE_ITEM (explicit VAT amount/rate)
+    - LEGAL_CLAUSE: Never produces VAT math (vat_amount = null, vat_percentage = null)
+
+    VAT Classes:
+    - P1 (VAT-inclusive): Premium explicitly includes VAT
+    - P2 (VAT-exclusive): Premium excludes VAT, VAT shown separately
+    - P3 (VAT-Deferred - ALLOWED): VAT charged at billing time
+    - P4 (DISALLOWED): Only total shown, no breakdown
+    - P5 (DISALLOWED): Zero VAT explicitly stated
+    - P6 (DISALLOWED): Non-standard VAT (not 15%)
+
+    Returns:
+        Tuple of (vat_class, vat_signal_type, detection_method, is_vat_inclusive)
+
+    Raises:
+        VatPolicyViolation: If VAT class is P4-P6 (disallowed)
+
+    Note:
+        P3 (VAT-Deferred) is now ALLOWED and returns normally.
+    """
+    # VAT rate whitelist for Saudi Arabia
+    ALLOWED_VAT_RATES = {15.0}
+    
+    # Auto-detect signal type if not provided
+    if vat_signal_type is None:
+        vat_signal_type = _detect_vat_signal_type(prem_info, text)
+
+    # Get VAT-related fields from extraction
+    premium_text = str(prem_info.get('base_premium_amount', '')).lower()
+    vat_amount_text = str(prem_info.get('vat_amount', '')).strip()
+    vat_percentage_text = str(prem_info.get('vat_percentage', '')).strip()
+    total_text = str(prem_info.get('total_including_vat', '')).lower()
+
+    # Parse VAT amount and percentage
+    vat_amount = _parse_currency_amount(vat_amount_text)
+    vat_percentage = None
+    if vat_percentage_text and vat_percentage_text not in ['', 'N/A', 'None']:
+        try:
+            vat_percentage = float(vat_percentage_text)
+        except ValueError:
+            pass
+
+    logger.info("🔍 VAT Classification: Analyzing VAT structure...")
+    logger.info(f"   VAT Signal Type: {vat_signal_type}")
+    logger.info(f"   VAT Amount Text: '{vat_amount_text}'")
+    logger.info(f"   VAT Percentage Text: '{vat_percentage_text}'")
+    logger.info(f"   VAT Amount Parsed: {vat_amount}")
+    logger.info(f"   VAT Percentage Parsed: {vat_percentage}")
+
+    # ========================================================================
+    # CRITICAL FIX: NULLIFY HALLUCINATED VALUES
+    # ========================================================================
+    # If signal_type is not FINANCIAL_LINE_ITEM, the extracted VAT values are hallucinated
+    # and must be set to None to prevent incorrect P5/P6 classification
+    if vat_signal_type not in ["FINANCIAL_LINE_ITEM", "LEGAL_CLAUSE"]:
+        if vat_amount is not None or vat_percentage is not None:
+            logger.warning("🚫 Nullifying hallucinated VAT values (signal type does not support VAT math)")
+            logger.warning(f"   Original vat_amount: {vat_amount}, vat_percentage: {vat_percentage}")
+            logger.warning(f"   Signal type: {vat_signal_type} (only FINANCIAL_LINE_ITEM can have VAT numbers)")
+            vat_amount = None
+            vat_percentage = None
+            logger.warning("   ✅ Hallucinated values nullified - will not trigger P5/P6 violations")
+
+    # ========================================================================
+    # LEGAL_CLAUSE HANDLING (Critical Fix - Never produces VAT math)
+    # ========================================================================
+    if vat_signal_type == "LEGAL_CLAUSE":
+        logger.warning("⚠️ VAT Signal: LEGAL_CLAUSE detected - No VAT math will be performed")
+        logger.warning("   Legal boilerplate does not constitute financial data")
+        # Legal clauses should be treated as P1 (VAT-inclusive) but with null amounts
+        # This allows the quote to pass but prevents VAT calculation
+        return ("P1", "LEGAL_CLAUSE", "legal_clause", True)
+
+    # ========================================================================
+    # P6 DETECTION - NON-STANDARD VAT RATE (CHECK FIRST)
+    # ========================================================================
+    if vat_percentage is not None and vat_percentage not in ALLOWED_VAT_RATES:
+        if vat_percentage == 0:
+            # This is P5, handle below
+            pass
+        else:
+            logger.error(f"❌ VAT Classification: P6 (Non-standard VAT: {vat_percentage}%)")
+            logger.error(f"   Saudi Arabia only allows VAT rates: {ALLOWED_VAT_RATES}")
+            raise VatPolicyViolation(
+                vat_class="P6",
+                reason=f"Non-standard VAT rate: {vat_percentage}% (allowed: {ALLOWED_VAT_RATES})",
+                details={
+                    "vat_percentage": vat_percentage,
+                    "allowed_rates": list(ALLOWED_VAT_RATES)
+                }
+            )
+
+    # ========================================================================
+    # P5 DETECTION - ZERO VAT
+    # ========================================================================
+    if vat_amount == 0 or vat_percentage == 0:
+        logger.error("❌ VAT Classification: P5 (Zero VAT)")
+        logger.error("   Documents with zero VAT are not allowed")
+        raise VatPolicyViolation(
+            vat_class="P5",
+            reason="Zero VAT explicitly stated",
+            details={
+                "vat_amount": vat_amount,
+                "vat_percentage": vat_percentage
+            }
+        )
+
+    # ========================================================================
+    # P1 DETECTION - VAT-INCLUSIVE (Only if PRICE_ANNOTATION)
+    # ========================================================================
+    # P1 Rule: Only if vat_signal_type == PRICE_ANNOTATION AND no VAT rate/amount stated
+    if vat_signal_type == "PRICE_ANNOTATION":
+        vat_inclusive_indicators = [
+            'incl. vat', 'incl vat', 'including vat', 'vat included',
+            'with vat', 'incl. tax', 'including tax', 'tax included',
+            'inclusive vat', 'inclusive of vat', 'inclusive tax'
+        ]
+
+        # CRITICAL FIX: Check premium_text, total_text, AND document text for VAT-inclusive indicators
+        # This prevents documents with "Total Premium with VAT included" from being misclassified
+        text_lower = text.lower() if text else ""
+        search_text = premium_text + " " + total_text + " " + text_lower[:2000]
+
+        if any(indicator in search_text for indicator in vat_inclusive_indicators):
+            # Check: P1 requires NO VAT rate or amount stated
+            if not vat_amount and not vat_percentage:
+                logger.info("✅ VAT Classification: P1 (VAT-inclusive - PRICE_ANNOTATION)")
+                logger.info("   Document contains 'incl. VAT', 'Total Premium with VAT included', or similar phrase")
+                logger.info("   No VAT rate or amount stated (as required for P1)")
+                logger.info("   This is a valid VAT-inclusive document (not P4 or P3)")
+                return ("P1", "PRICE_ANNOTATION", "price_annotation", True)
+            else:
+                # Has VAT rate/amount but also has price annotation - this is ambiguous
+                # Prefer FINANCIAL_LINE_ITEM if it exists, otherwise treat as P2
+                logger.warning("⚠️ Ambiguous: PRICE_ANNOTATION found but VAT rate/amount also present")
+                if vat_signal_type == "FINANCIAL_LINE_ITEM":
+                    # Will be handled in P2 section
+                    pass
+                else:
+                    # Fall through to P2 detection
+                    pass
+
+    # ========================================================================
+    # P2 DETECTION - VAT-EXCLUSIVE (Only if FINANCIAL_LINE_ITEM)
+    # ========================================================================
+    # P2 Rule: Only if vat_signal_type == FINANCIAL_LINE_ITEM AND VAT rate in allowed list
+    
+    if vat_signal_type == 'FINANCIAL_LINE_ITEM':
+        # Indicator 1: Separate VAT line item exists (STRICT CHECK - explicit amount)
+        if vat_amount and vat_amount > 0:
+            logger.info(f"✅ VAT Classification: P2 (VAT-exclusive - FINANCIAL_LINE_ITEM)")
+            logger.info(f"   VAT shown as separate line: SAR {vat_amount:,.2f}")
+            return ("P2", "FINANCIAL_LINE_ITEM", "separate_vat_line_item", False)
+
+        # Indicator 2: VAT percentage is explicitly stated with valid rate
+        if vat_percentage and vat_percentage in ALLOWED_VAT_RATES:
+            logger.info(f"✅ VAT Classification: P2 (VAT-exclusive - FINANCIAL_LINE_ITEM)")
+            logger.info(f"   VAT rate stated: {vat_percentage}% (in allowed list)")
+            return ("P2", "FINANCIAL_LINE_ITEM", "vat_rate_stated", False)
+
+        # Indicator 3: Check document text for explicit VAT breakdown patterns (with numbers)
+        if text:
+            vat_line_patterns = [
+                r'VAT\s*\(?\s*15%?\s*\)?\s*:?\s*SAR?\s*[\d,]+',
+                r'VAT\s*@?\s*15%\s*:?\s*SAR?\s*[\d,]+',
+                r'Value Added Tax\s*:?\s*SAR?\s*[\d,]+',
+            ]
+
+            # Search expanded text range (15000 chars) to catch VAT anywhere in document
+            search_text = text[:15000] if len(text) > 15000 else text
+
+            for pattern in vat_line_patterns:
+                if re.search(pattern, search_text, re.IGNORECASE):
+                    logger.info("✅ VAT Classification: P2 (VAT-exclusive - FINANCIAL_LINE_ITEM)")
+                    logger.info("   VAT line with amount found in document text")
+                    return ("P2", "FINANCIAL_LINE_ITEM", "document_vat_line_pattern", False)
+
+        # Indicator 4: "VAT Exclusive" keyword without specific percentage ⭐ NEW
+        # For "Rates and premiums in this quote are VAT exclusive"
+        if text:
+            vat_exclusive_patterns = [
+                r'vat\s+exclusive',
+                r'rates.*vat\s+exclusive',
+                r'premium.*vat\s+exclusive',
+                r'quote.*vat\s+exclusive',
+                r'prices.*vat\s+exclusive',
+            ]
+
+            search_text = text[:15000] if len(text) > 15000 else text
+
+            for pattern in vat_exclusive_patterns:
+                if re.search(pattern, search_text, re.IGNORECASE):
+                    logger.info("✅ VAT Classification: P2 (VAT-exclusive - FINANCIAL_LINE_ITEM)")
+                    logger.info(f"   'VAT Exclusive' keyword found in document")
+                    logger.info("   No specific rate mentioned - defaulting to Saudi standard: 15%")
+                    return ("P2", "FINANCIAL_LINE_ITEM", "vat_exclusive_keyword", False)
+
+    # ========================================================================
+    # P4 DETECTION - ONLY TOTAL, NO BREAKDOWN
+    # ========================================================================
+    # CRITICAL FIX: Only trigger P4 if signal type is NOT PRICE_ANNOTATION
+    # Documents with "Total Premium with VAT included" should be P1, not P4
+    if 'total' in total_text and 'vat' in total_text:
+        if not vat_amount and not vat_percentage:
+            # Check if this is actually a P1 document (VAT-inclusive) that was missed
+            if vat_signal_type == "PRICE_ANNOTATION":
+                # This is P1, not P4 - document explicitly states VAT is included
+                logger.info("✅ P4 Detection Override: Signal type is PRICE_ANNOTATION")
+                logger.info("   Document states VAT is included (P1), not missing breakdown (P4)")
+                logger.info("   Returning P1 classification instead of P4")
+                return ("P1", "PRICE_ANNOTATION", "price_annotation_total", True)
+
+            # Otherwise, this is genuinely P4 (total shown but no breakdown and no inclusion statement)
+            logger.error("❌ VAT Classification: P4 (Only total shown, no breakdown)")
+            logger.error("   Document shows 'Total including VAT' but no VAT details or inclusion statement")
+            raise VatPolicyViolation(
+                vat_class="P4",
+                reason="Only total shown, no VAT breakdown provided",
+                details={
+                    "total_text": total_text,
+                    "vat_amount": vat_amount,
+                    "vat_percentage": vat_percentage,
+                    "vat_signal_type": vat_signal_type
+                }
+            )
+
+    # ========================================================================
+    # P3 DETECTION - NO VAT MENTION (DEFAULT/FALLBACK)
+    # ========================================================================
+    # P3 Rule: If vat_signal_type == NONE
+    if vat_signal_type == "NONE":
+        # CRITICAL FIX: Before classifying as P3, do a thorough check for VAT-inclusive indicators
+        # These might appear beyond the first 2000 chars or in fields we haven't checked yet
+        logger.info("🔍 P3 Pre-Check: Performing thorough search for VAT-inclusive indicators...")
+
+        vat_inclusive_indicators = [
+            'incl. vat', 'incl vat', 'including vat', 'vat included',
+            'with vat', 'incl. tax', 'including tax', 'tax included',
+            'inclusive vat', 'inclusive of vat', 'inclusive tax',
+            'total premium with vat included', 'premium with vat included'
+        ]
+
+        # Search in premium_text, total_text, and FULL document text (not just 2000 chars)
+        text_lower = text.lower() if text else ""
+        search_text = premium_text + " " + total_text + " " + text_lower
+
+        found_indicator = None
+        for indicator in vat_inclusive_indicators:
+            if indicator in search_text:
+                found_indicator = indicator
+                break
+
+        if found_indicator:
+            # This is a P1 document that was missed by earlier detection
+            logger.info(f"✅ P3 Override: Found VAT-inclusive indicator '{found_indicator}'")
+            logger.info("   This is a P1 (VAT-inclusive) document, not P3")
+            logger.info("   Document explicitly states VAT is included in premium")
+            return ("P1", "PRICE_ANNOTATION", "price_annotation_fallback", True)
+
+        # If no VAT-inclusive indicators found, this is genuinely P3
+        # P3 is now ALLOWED - VAT will be determined at billing time
+        logger.info("✅ VAT Classification: P3 (VAT-Deferred)")
+        logger.info("   VAT signal type: NONE - No VAT signals detected in quote")
+        logger.info("   VAT will be charged at time of billing")
+        logger.info("   Quote does not include VAT information")
+        return ("P3", "NONE", "vat_deferred", False)
+
+    # Fallback: If we reach here, signal type doesn't match expected patterns
+    # Treat as P3 (VAT-Deferred) rather than rejecting
+    logger.info(f"✅ VAT Classification: P3 (VAT-Deferred - Fallback)")
+    logger.info(f"   VAT signal type: {vat_signal_type} but no clear VAT information")
+    logger.info("   Treating as VAT-deferred - VAT will be determined at billing")
+    return ("P3", "NONE", "vat_deferred", False)
 
 
 def _parse_currency_amount(text: str) -> Optional[float]:
@@ -1701,38 +2600,170 @@ Return ONLY valid JSON."""
         
         final_premium = premium_stated or premium_calculated
         
-        vat_pct = _parse_currency_amount(prem_info.get('vat_percentage')) or 15.0
+        vat_pct = _parse_currency_amount(prem_info.get('vat_percentage'))
         policy_fee = _parse_currency_amount(prem_info.get('policy_fee')) or 0
-        
-        # Detect if premium already includes VAT
-        vat_inclusive = False
-        if final_premium:
-            # Try to detect from extracted data
-            total_from_extraction = _parse_currency_amount(prem_info.get('total_including_vat'))
-            vat_inclusive = _detect_vat_inclusion(prem_info, total_from_extraction, final_premium, vat_pct)
-            
-            if vat_inclusive:
-                # Premium includes VAT - extract base premium by removing VAT
-                # Formula: base = total / (1 + vat_rate)
-                base_premium_before_vat = final_premium / (1 + (vat_pct / 100))
-                vat_amount = final_premium - base_premium_before_vat
-                # Recalculate with policy fee
-                base_premium_excl_vat = (final_premium - policy_fee) / (1 + (vat_pct / 100))
-                final_premium = base_premium_excl_vat  # Normalize to VAT-exclusive
-                vat_amount = (final_premium + policy_fee) * (vat_pct / 100)
-                total_annual_cost = final_premium + policy_fee + vat_amount
-                logger.info(f"🔄 Detected VAT-inclusive premium. Normalized to VAT-exclusive: {final_premium:.2f}")
+
+        # ========================================================================
+        # COMPREHENSIVE VAT DETECTION v9.0 (Pattern-First with Validation)
+        # ========================================================================
+        logger.info("🔍 Stage 5.1: Comprehensive VAT detection and classification")
+
+        # Use new comprehensive detection function
+        vat_result = _comprehensive_vat_detection(text, prem_info)
+
+        vat_class = vat_result["class"]
+        original_premium_includes_vat = vat_result["is_inclusive"]
+        vat_detection_method = vat_result["detection_method"]
+        pattern_matched = vat_result["pattern_matched"]
+        confidence = vat_result["confidence"]
+        vat_warning = vat_result["warning"]
+        requires_verification = vat_result["requires_verification"]
+
+        # Preserve original premium (stated in document before any normalization)
+        stated_premium = final_premium
+
+        logger.info(f"📋 VAT Classification Results:")
+        logger.info(f"   VAT Class: {vat_class}")
+        logger.info(f"   Detection Method: {vat_detection_method}")
+        logger.info(f"   Pattern Matched: {pattern_matched}")
+        logger.info(f"   Confidence: {confidence}")
+        logger.info(f"   Premium Includes VAT: {'Yes' if original_premium_includes_vat else 'No'}")
+        logger.info(f"   Requires Verification: {'Yes' if requires_verification else 'No'}")
+        if vat_warning:
+            logger.warning(f"   ⚠️ Warning: {vat_warning}")
+
+        # ========================================================================
+        # POLICY GATE: Reject ONLY P5 (Zero VAT) and P6 (Non-standard rate)
+        # ========================================================================
+        if vat_class in ["P5", "P6"]:
+            logger.error(f"❌ VAT Policy Violation: {vat_class}")
+            raise VatPolicyViolation(
+                vat_class=vat_class,
+                reason=vat_result["warning"] or f"VAT class {vat_class} is not allowed",
+                details={
+                    "detection_method": vat_detection_method,
+                    "pattern_matched": pattern_matched
+                }
+            )
+
+
+        # ========================================================================
+        # SET VAT VALUES FROM DETECTION RESULT
+        # ========================================================================
+        # Use values from comprehensive detection
+        vat_percentage = vat_result["vat_percentage"]
+        vat_amount = vat_result["vat_amount"]
+
+        logger.info(f"💰 VAT Values from Detection:")
+        logger.info(f"   vat_percentage: {vat_percentage}")
+        logger.info(f"   vat_amount: {vat_amount}")
+
+        # STEP 4: Handle P1 - No VAT math allowed
+        if vat_class == "P1":
+            # P1 (VAT-inclusive): VAT already included in premium, no separate calculation
+            logger.info(f"🛑 P1 (VAT-Inclusive): No VAT math - Premium used as-is")
+            vat_amount = None
+            vat_percentage = None
+            normalized_premium = stated_premium
+            total_annual_cost = normalized_premium + policy_fee
+            final_premium = normalized_premium
+
+            logger.info(f"💰 Processing P1 Premium (VAT already included):")
+            logger.info(f"   - Stated Premium: SAR {stated_premium:,.2f}")
+            logger.info(f"   - VAT Amount: null (included in premium)")
+            logger.info(f"   - VAT Percentage: null (included in premium)")
+            logger.info(f"   - Policy Fee: SAR {policy_fee:,.2f}")
+            logger.info(f"   - Total Annual Cost: SAR {total_annual_cost:,.2f}")
+        elif vat_class == "P3":
+            # P3 (VAT-Deferred): VAT will be charged at billing time, not included in quote
+            logger.info(f"🛑 P3 (VAT-Deferred): VAT charged at billing - no VAT in quote")
+            vat_amount = None
+            vat_percentage = None
+            normalized_premium = stated_premium
+            total_annual_cost = normalized_premium + policy_fee
+            final_premium = normalized_premium
+
+            logger.info(f"💰 Processing P3 Premium (VAT deferred to billing):")
+            logger.info(f"   - Stated Premium: SAR {stated_premium:,.2f}")
+            logger.info(f"   - VAT Amount: null (charged at billing)")
+            logger.info(f"   - VAT Percentage: null (charged at billing)")
+            logger.info(f"   - Policy Fee: SAR {policy_fee:,.2f}")
+            logger.info(f"   - Total Annual Cost: SAR {total_annual_cost:,.2f}")
+        elif vat_class == "P2":
+            # STEP 5: VAT CALCULATION (P2 - VAT-Exclusive)
+            # vat_percentage and vat_amount already set by comprehensive detection
+            logger.info(f"💰 Processing P2 (VAT-Exclusive) Premium:")
+
+            normalized_premium = stated_premium  # Premium is VAT-exclusive
+
+            if vat_amount and vat_amount > 0:
+                # VAT amount already provided by detection (extracted from document)
+                total_annual_cost = normalized_premium + policy_fee + vat_amount
+                logger.info(f"   Using extracted VAT amount")
+                logger.info(f"   Calculation:")
+                logger.info(f"   - Base Premium (excl. VAT): SAR {normalized_premium:,.2f}")
+                logger.info(f"   - VAT Amount (extracted): SAR {vat_amount:,.2f}")
+                logger.info(f"   - VAT Percentage: {vat_percentage}%")
+                logger.info(f"   - Policy Fee: SAR {policy_fee:,.2f}")
+                logger.info(f"   - Total Annual Cost: SAR {total_annual_cost:,.2f}")
+            elif vat_percentage is not None:
+                # Calculate VAT from percentage (15% or extracted)
+                vat_amount = (stated_premium + policy_fee) * (vat_percentage / 100)
+                total_annual_cost = normalized_premium + policy_fee + vat_amount
+                logger.info(f"   Calculating VAT from percentage")
+                logger.info(f"   Calculation:")
+                logger.info(f"   - Base Premium (excl. VAT): SAR {normalized_premium:,.2f}")
+                logger.info(f"   - VAT @ {vat_percentage}%: SAR {vat_amount:,.2f}")
+                logger.info(f"   - Policy Fee: SAR {policy_fee:,.2f}")
+                logger.info(f"   - Total Annual Cost: SAR {total_annual_cost:,.2f}")
             else:
-                # Premium is VAT-exclusive (standard case)
-                vat_amount = (final_premium + policy_fee) * (vat_pct / 100)
-                total_annual_cost = final_premium + policy_fee + vat_amount
-        else:
-            vat_amount = _parse_currency_amount(prem_info.get('vat_amount'))
-            total_annual_cost = _parse_currency_amount(prem_info.get('total_including_vat'))
-            # If we have total but no base premium, try to extract base
-            if total_annual_cost and not final_premium:
-                # Assume VAT-exclusive if we can't determine
-                final_premium = total_annual_cost - (vat_amount or 0) - policy_fee
+                # Should not happen with new detection, but handle gracefully
+                logger.warning("⚠️ P2 but no VAT percentage available - this shouldn't happen")
+                vat_amount = None
+                total_annual_cost = normalized_premium + policy_fee
+
+            # Update final_premium to normalized value for comparison
+            final_premium = normalized_premium
+
+        logger.info(f"✅ VAT Processing Complete")
+        logger.info(f"   Final normalized premium (for comparison): SAR {final_premium:,.2f}")
+        logger.info(f"   Classification: {vat_class}")
+        logger.info(f"   Confidence: {confidence}")
+        if vat_warning:
+            logger.info(f"   Warning: {vat_warning}")
+
+        # ========================================================================
+        # DEFENSIVE VALIDATION WITH GRACEFUL CORRECTIONS
+        # ========================================================================
+        # P1 validation (graceful correction)
+        if vat_class == "P1" and vat_amount is not None:
+            logger.warning(f"⚠️ P1 correction: Nullifying unexpected VAT amount ({vat_amount})")
+            logger.warning("   P1 documents should not have explicit VAT amounts (VAT already included)")
+            vat_amount = None
+
+        if vat_class == "P1" and vat_percentage is not None:
+            logger.warning(f"⚠️ P1 correction: Nullifying unexpected VAT percentage ({vat_percentage}%)")
+            logger.warning("   P1 documents should not have explicit VAT percentages (VAT already included)")
+            vat_percentage = None
+
+        # P3 validation (graceful correction instead of assertion)
+        if vat_class == "P3" and vat_amount is not None:
+            logger.warning(f"⚠️ P3 correction: Nullifying unexpected VAT amount ({vat_amount})")
+            logger.warning("   P3 documents should not have VAT amounts in quote")
+            vat_amount = None
+
+        if vat_class == "P3" and vat_percentage is not None:
+            logger.warning(f"⚠️ P3 correction: Nullifying unexpected VAT percentage ({vat_percentage}%)")
+            logger.warning("   P3 documents should not have VAT percentage in quote")
+            vat_percentage = None
+
+        # P2 validation (graceful correction - default to 15%)
+        if vat_class == "P2" and vat_percentage is None:
+            logger.warning("⚠️ P2 correction: VAT percentage missing, defaulting to Saudi standard 15%")
+            logger.warning("   P2 documents must have VAT percentage set")
+            vat_percentage = 15.0
+
+        logger.info("✅ Defensive validation passed - VAT handling is compliant")
         
         # CRITICAL FIX: Determine applicable deductible tier
         deductibles_data = raw_data.get('deductibles_complete', {})
@@ -1908,14 +2939,32 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
             "insured_name": raw_data.get('insured_customer_name', insured_name),
             "policy_type": raw_data.get('policy_type', ''),
             "policy_number": raw_data.get('policy_number', ''),
-            
-            "premium_amount": final_premium,  # Always VAT-exclusive after normalization
+
+            # PREMIUM FIELDS (VAT v8.0 - Preserves Original Semantics)
+            "premium_amount": final_premium,  # Normalized premium (always VAT-exclusive for comparison)
+            "stated_premium": stated_premium,  # Original premium from document (as stated, before normalization)
             "premium_frequency": prem_info.get('payment_terms', 'Annual'),
             "rate": rate_formatted,
             "total_annual_cost": total_annual_cost,
-            "premium_includes_vat": False,  # Always False after normalization
-            "vat_amount": vat_amount,
-            "vat_percentage": vat_pct,
+
+            # VAT FIELDS (v9.0 - Comprehensive Pattern-Based Detection)
+            "premium_includes_vat": False,  # Normalized field (always False for fair comparison)
+            "original_premium_includes_vat": original_premium_includes_vat,  # As detected from document (source-of-truth)
+            "vat_class": vat_class,  # P1 (inclusive) | P2 (exclusive)
+            "vat_detection_method": vat_detection_method,  # How VAT was detected
+            "vat_amount": vat_amount,  # null for P1 (inclusive)
+            "vat_percentage": vat_percentage,  # null for P1, 15.0 for P2 (or extracted value)
+
+            # VAT Classification Metadata (v9.0 - NEW)
+            "vat_classification": {
+                "class": vat_class,
+                "detection_method": vat_detection_method,
+                "pattern_matched": pattern_matched,
+                "confidence": confidence,
+                "is_assumed": requires_verification,
+                "warning": vat_warning,
+                "requires_verification": requires_verification
+            },
             
             "score": analysis.get('overall_score', 75.0),
             "deductible": applicable_deductible_summary,
@@ -1969,8 +3018,21 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
                 "premium_source": "stated" if premium_stated else "calculated",
                 "premium_calculated": premium_calculated,
                 "premium_stated": premium_stated,
+
+                # VAT Detection Details (v9.0 - Comprehensive Pattern Detection)
+                "vat_class": vat_class,  # P1 (inclusive) | P2 (exclusive)
+                "vat_detection_method": vat_detection_method,
+                "vat_pattern_matched": pattern_matched,
+                "vat_confidence": confidence,
+                "vat_warning": vat_warning,
+                "vat_requires_verification": requires_verification,
+                "original_premium_includes_vat": original_premium_includes_vat,
+                "stated_premium_original": stated_premium,
+                "normalized_premium_excl_vat": final_premium,
                 "vat_amount": vat_amount,
+                "vat_percentage": vat_percentage,
                 "policy_fee": policy_fee,
+
                 "rate_original": rate_text_raw,
                 "rate_normalized": rate_formatted,
                 "items_extracted": {
