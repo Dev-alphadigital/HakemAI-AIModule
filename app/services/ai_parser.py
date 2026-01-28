@@ -62,13 +62,20 @@ import json
 import re
 import logging
 import asyncio
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, NamedTuple
 from datetime import datetime
 from app.core.openai_client import openai_client
 from app.core.config import settings
 from app.models.quote_model import ExtractedQuoteData
 
 logger = logging.getLogger(__name__)
+
+
+class InsurerDetectionResult(NamedTuple):
+    """Result of insurer detection with metadata."""
+    name: Optional[str]  # Detected insurer name or None
+    method: Optional[str]  # Detection method: "filename", "text_match", "pattern", "ai", "ocr", "format_override", None
+    confidence: Optional[str]  # Confidence level: "high", "medium", "low", None
 
 
 class AIParsingError(Exception):
@@ -852,16 +859,155 @@ def _validate_and_enhance_extraction(ai_data: Dict, raw_text: str, total_si: flo
     return warranties
 
 
-async def _extract_insurer_from_text(text: str, filename: str = "") -> str:
-    """Extract insurance company name (NOT the customer)."""
+def _parse_insurer_from_ocr_text(ocr_text: str) -> Optional[str]:
+    """
+    Parse insurer name from OCR text by cross-referencing with known patterns.
+
+    This function attempts to normalize OCR text to standard insurer names
+    by fuzzy matching against reference patterns. It does NOT validate or
+    reject unknown insurers.
+
+    Args:
+        ocr_text: Text extracted from logo via OCR
+
+    Returns:
+        Normalized insurer name or None if no match found
+    """
+    if not ocr_text:
+        return None
+
+    ocr_text_lower = ocr_text.lower()
+
+    # Try to match against INSURER_REFERENCE_PATTERNS (fuzzy matching)
+    # Note: INSURER_REFERENCE_PATTERNS is defined inside _extract_insurer_from_text
+    # We'll use a simplified version here with the most common patterns
+    reference_patterns = {
+        # Premium Tier
+        'Tawuniya': ['tawuniya', 'company for cooperative insurance'],
+        'Walaa Insurance': ['walaa', 'walaa cooperative'],
+        'MedGulf Insurance': ['medgulf', 'mediterranean and gulf'],
+
+        # Strong Tier
+        'Gulf Insurance Group (GIG)': ['gig', 'gulf insurance group', 'gulf insurance'],
+        'Gulf General Cooperative Insurance Company': ['ggi', 'gulf general'],
+        'Al-Etihad Cooperative Insurance': ['al-etihad', 'al etihad'],
+        'Wataniya Insurance': ['wataniya'],
+        'AXA Gulf': ['axa'],
+        'Allianz Saudi Fransi': ['allianz'],
+        'Zurich Insurance': ['zurich'],
+
+        # Solid Tier
+        'Malath Insurance': ['malath'],
+        'Liva Insurance': ['liva'],
+        'Tokio Marine': ['tokio marine'],
+
+        # Baseline Tier
+        'Chubb Arabia': ['chubb'],
+        'Arabian Shield Cooperative Insurance Company': ['arabian shield'],
+        'Allied Cooperative Insurance Group': ['acig', 'allied cooperative'],
+        'Saudi Arabian Cooperative Insurance Company': ['saico', 'saudi arabian cooperative'],
+        'Salama Insurance': ['salama'],
+        'Al Jazeera Takaful Company': ['ajtc', 'al jazeera takaful'],
+        'Arabia Insurance Cooperative Company': ['aicc', 'acic', 'arabia insurance cooperative'],
+        'Al Sagr Co-operative Insurance Company': ['al sagr', 'al-sagr', 'alsagr'],
+        'Amanah Cooperative Insurance Company': ['amanah'],
+        'Mutakamela Insurance': ['mutakamela'],
+        'Al Rajhi Takaful': ['art', 'al rajhi takaful', 'alrajhi takaful'],
+
+        # Challenged Tier
+        'Gulf Union Alahlia Cooperative Insurance Company': ['gulf union'],
+        'United Cooperative Assurance (UCA)': ['uca', 'united cooperative assurance'],
+    }
+
+    for normalized_name, patterns in reference_patterns.items():
+        for pattern in patterns:
+            if pattern in ocr_text_lower:
+                logger.info(f"✅ OCR text matched pattern '{pattern}' -> '{normalized_name}'")
+                return normalized_name
+
+    # If no exact match, check for generic insurance keywords to determine if OCR found a company name
+    insurance_keywords = ['insurance', 'cooperative', 'takaful', 'assurance', 'company']
+    if any(keyword in ocr_text_lower for keyword in insurance_keywords):
+        # OCR found something insurance-related but not in our reference list
+        # Return the first 50 chars as a potential new insurer
+        logger.info(f"✅ OCR found insurance-related text (not in reference): {ocr_text[:50]}")
+        return ocr_text[:50].strip()
+
+    return None
+
+
+async def _ocr_fallback_detect_insurer(pdf_path: str) -> Optional[str]:
+    """
+    OCR fallback for insurer detection when all text-based methods fail.
+
+    This is a COST-OPTIMIZED last resort - only called when:
+    1. Filename-based detection failed
+    2. Text pattern matching failed
+    3. AI extraction failed
+
+    Args:
+        pdf_path: Path to the PDF file
+
+    Returns:
+        Detected insurer name or None
+    """
+    try:
+        logger.info(f"🔍 OCR fallback: Attempting logo-based insurer detection for {pdf_path}")
+
+        # Step 1: Extract logo bytes from PDF
+        from app.services.pdf_extractor import pdf_extractor
+        logo_bytes = pdf_extractor.extract_logo_bytes_from_pdf(pdf_path)
+
+        if not logo_bytes:
+            logger.info("No logo found in PDF - OCR fallback not possible")
+            return None
+
+        logger.info(f"📸 Logo extracted ({len(logo_bytes)} bytes) - calling Azure OCR")
+
+        # Step 2: Call Azure OCR
+        from app.services.azure_ocr_service import azure_ocr_service
+        ocr_text = await azure_ocr_service.analyze_image_for_text(logo_bytes)
+
+        if not ocr_text:
+            logger.info("OCR returned no text from logo")
+            return None
+
+        logger.info(f"✅ OCR extracted text: {ocr_text}")
+
+        # Step 3: Parse OCR text to identify insurer name
+        # Cross-reference with INSURER_REFERENCE_PATTERNS for normalization (not validation)
+        detected_insurer = _parse_insurer_from_ocr_text(ocr_text)
+
+        if detected_insurer:
+            logger.info(f"✅ OCR detected insurer: {detected_insurer}")
+        else:
+            logger.info("OCR text did not match any known insurers - using raw OCR text")
+            detected_insurer = ocr_text[:50].strip()  # Use first 50 chars of OCR text as fallback
+
+        return detected_insurer
+
+    except Exception as e:
+        logger.error(f"❌ OCR fallback error: {e}")
+        return None
+
+
+async def _extract_insurer_from_text(text: str, filename: str = "", pdf_path: Optional[str] = None) -> InsurerDetectionResult:
+    """
+    Extract insurance company name (NOT the customer).
+
+    Returns:
+        InsurerDetectionResult with name, detection method, and confidence level.
+    """
     # Priority 1: Check filename first (more reliable)
     if filename:
         filename_lower = filename.lower()
         # Remove file extension for better matching
         filename_clean = filename_lower.replace('.pdf', '').replace('.doc', '').replace('.docx', '')
-        
+
         # Use word boundaries for more precise matching
-        insurers_map = {
+        # INSURER_REFERENCE_PATTERNS: Reference data for pattern matching and normalization.
+        # NOT a whitelist - used for fuzzy matching and standardization of detected names.
+        INSURER_REFERENCE_PATTERNS = {
             # Premium Tier
             r'\btawuniya\b': 'Tawuniya',
             r'company for cooperative insurance': 'Tawuniya',
@@ -928,10 +1074,10 @@ async def _extract_insurer_from_text(text: str, filename: str = "") -> str:
         }
         
         # Check with regex patterns for better accuracy
-        for pattern, full_name in insurers_map.items():
+        for pattern, full_name in INSURER_REFERENCE_PATTERNS.items():
             if re.search(pattern, filename_clean, re.IGNORECASE):
                 logger.info(f"✅ Detected insurer from filename: {full_name} (pattern: {pattern})")
-                return full_name
+                return InsurerDetectionResult(name=full_name, method="filename", confidence="high")
     
     # Priority 2: Check text content (search entire document for better coverage)
     # Search up to 10000 characters (covers most multi-page documents)
@@ -939,9 +1085,10 @@ async def _extract_insurer_from_text(text: str, filename: str = "") -> str:
     text_upper = text[:search_text_length].upper()
     text_lower = text[:search_text_length].lower()
     full_text_upper = text.upper()  # For patterns that need full text
-    
-    # Known insurers with exact text matching (search throughout document)
-    known_insurers = {
+
+    # KNOWN_INSURER_KEYWORDS: Reference data for exact text matching and normalization.
+    # Used for fuzzy matching - NOT a strict whitelist or validation requirement.
+    KNOWN_INSURER_KEYWORDS = {
         # Premium Tier Companies
         'TAWUNIYA': 'Tawuniya',
         'THE COMPANY FOR COOPERATIVE INSURANCE': 'Tawuniya',
@@ -1022,10 +1169,20 @@ async def _extract_insurer_from_text(text: str, filename: str = "") -> str:
         'UCA': 'United Cooperative Assurance (UCA)',
     }
     
-    for key, full_name in known_insurers.items():
-        if key in text_upper:
-            logger.info(f"✅ Detected insurer from text: {full_name}")
-            return full_name
+    for key, full_name in KNOWN_INSURER_KEYWORDS.items():
+        # For short keywords (≤4 chars), use word boundary regex to avoid false positives
+        # e.g., 'ART' should match 'ART' but not 'PARTial'
+        if len(key) <= 4:
+            # Use word boundary regex
+            pattern = r'\b' + re.escape(key) + r'\b'
+            if re.search(pattern, text_upper):
+                logger.info(f"✅ Detected insurer from text (word boundary): {full_name} (keyword: {key})")
+                return InsurerDetectionResult(name=full_name, method="text_match", confidence="high")
+        else:
+            # For longer keywords, substring matching is safe
+            if key in text_upper:
+                logger.info(f"✅ Detected insurer from text: {full_name} (keyword: {key})")
+                return InsurerDetectionResult(name=full_name, method="text_match", confidence="high")
     
     # Check for UCA as standalone abbreviation (common in documents) - search full text
     uca_patterns = [
@@ -1036,12 +1193,12 @@ async def _extract_insurer_from_text(text: str, filename: str = "") -> str:
     for pattern in uca_patterns:
         if re.search(pattern, text, re.IGNORECASE):
             logger.info(f"✅ Detected UCA from text pattern: {pattern}")
-            return 'United Cooperative Assurance (UCA)'
+            return InsurerDetectionResult(name='United Cooperative Assurance (UCA)', method="text_match", confidence="high")
     
     # Check for GIG abbreviation
     if re.search(r'\bGIG\b', text, re.IGNORECASE):
         logger.info(f"✅ Detected GIG from text")
-        return 'Gulf Insurance Group (GIG)'
+        return InsurerDetectionResult(name='Gulf Insurance Group (GIG)', method="text_match", confidence="high")
     
     # Priority 3: Pattern matching for generic insurance company names (search full text)
     patterns = [
@@ -1100,7 +1257,7 @@ async def _extract_insurer_from_text(text: str, filename: str = "") -> str:
                     # Additional validation - check if it contains insurance-related keywords
                     if any(keyword in company_lower for keyword in ['insurance', 'assurance', 'group', 'cooperative', 'takaful']):
                         logger.info(f"✅ Detected insurer from pattern: {company} (pattern: {pattern})")
-                        return company
+                        return InsurerDetectionResult(name=company, method="pattern", confidence="medium")
         except Exception as e:
             logger.debug(f"Pattern matching error: {e}")
             continue
@@ -1113,12 +1270,23 @@ async def _extract_insurer_from_text(text: str, filename: str = "") -> str:
         ai_detected = await _ai_detect_insurer(text_for_ai)
         if ai_detected and ai_detected != "Unknown Insurer":
             logger.info(f"✅ AI detected insurer: {ai_detected}")
-            return ai_detected
+            return InsurerDetectionResult(name=ai_detected, method="ai", confidence="low")
     except Exception as e:
         logger.warning(f"⚠️ AI detection failed: {e}")
-    
-    logger.warning(f"⚠️ Could not detect insurer from filename or text")
-    return "Unknown Insurer"
+
+    # Priority 5: OCR fallback (NEW - last resort)
+    if pdf_path:
+        logger.info("All text-based methods failed - attempting OCR fallback")
+        ocr_detected = await _ocr_fallback_detect_insurer(pdf_path)
+        if ocr_detected:
+            logger.info(f"✅ OCR detected insurer: {ocr_detected}")
+            return InsurerDetectionResult(name=ocr_detected, method="ocr", confidence="low")
+    else:
+        logger.info("No pdf_path provided - skipping OCR fallback")
+
+    # Final fallback
+    logger.warning(f"⚠️ All detection methods (including OCR) failed")
+    return InsurerDetectionResult(name=None, method=None, confidence=None)
 
 
 async def _ai_detect_insurer(text_sample: str) -> str:
@@ -1127,12 +1295,12 @@ async def _ai_detect_insurer(text_sample: str) -> str:
     Fallback when pattern matching fails.
     """
     if not text_sample or len(text_sample.strip()) < 100:
-        return "Unknown Insurer"
+        return None
     
     try:
         prompt = f"""You are an expert at analyzing insurance documents. Extract the name of the INSURANCE COMPANY (the insurer/provider) from the following document text.
 
-IMPORTANT: Return ONLY the insurance company name, nothing else. If you cannot find it, return "Unknown Insurer".
+IMPORTANT: Return ONLY the insurance company name, nothing else. If you cannot find it, return None.
 
 Known Saudi insurance companies include:
 - Tawuniya (The Company for Cooperative Insurance)
@@ -1191,7 +1359,7 @@ Return the exact insurance company name as it appears in the document, or a stan
         
         # Validate - check if it's a known insurer or contains insurance keywords
         if detected_name.lower() in ['unknown insurer', 'unknown', 'not found', 'n/a', 'none']:
-            return "Unknown Insurer"
+            return None
         
         # Check if it contains insurance-related keywords
         detected_lower = detected_name.lower()
@@ -1246,11 +1414,11 @@ Return the exact insurance company name as it appears in the document, or a stan
             # Return the detected name as-is if it seems valid
             return detected_name
         
-        return "Unknown Insurer"
+        return None
         
     except Exception as e:
         logger.error(f"❌ AI insurer detection error: {e}")
-        return "Unknown Insurer"
+        return None
 
 
 def _extract_insured_from_text(text: str) -> str:
@@ -2185,27 +2353,42 @@ def _calculate_quality_score(extracted_data: Dict) -> Tuple[float, Dict]:
     return overall, scores
 
 
-async def extract_structured_data_from_text(text: str, filename: str) -> Dict:
+async def extract_structured_data_from_text(text: str, filename: str, pdf_path: Optional[str] = None) -> Dict:
     """
     PRODUCTION-READY 6-STAGE EXTRACTION SYSTEM v6.0
     ===============================================
     Stage 1: Entity identification (insurer vs insured)
-    Stage 2: Document format detection & preprocessing  
+    Stage 2: Document format detection & preprocessing
     Stage 3: Comprehensive data extraction with proper categorization
     Stage 4: Subjectivities, payment terms, and binding requirements
     Stage 5: Mathematical calculations and tier detection
     Stage 6: Intelligent analysis with transparent scoring
+
+    Args:
+        text: Extracted text from the PDF
+        filename: Original filename of the PDF
+        pdf_path: Optional path to the PDF file (for OCR fallback)
     """
-    
+
     # ========================================================================
     # STAGE 1: ENTITY IDENTIFICATION
     # ========================================================================
-    
+
     logger.info(f"🔍 Stage 1: Entity identification for {filename}")
-    
-    insurer_name = await _extract_insurer_from_text(text, filename)
+
+    insurer_result = await _extract_insurer_from_text(text, filename, pdf_path)
+    insurer_name = insurer_result.name if insurer_result.name else "Unknown Insurer"
+    detection_method = insurer_result.method
+    detection_confidence = insurer_result.confidence
+
     insured_name = _extract_insured_from_text(text)
-    
+
+    # Handle None return from insurer detection
+    if not insurer_result.name:
+        logger.warning(f"⚠️ Could not detect insurer from text, using fallback: {insurer_name}")
+    else:
+        logger.info(f"Insurer detected: {insurer_name} (method: {detection_method}, confidence: {detection_confidence})")
+
     logger.info(f"🏢 Insurer (Insurance Company): {insurer_name}")
     logger.info(f"👤 Insured (Customer): {insured_name}")
     
@@ -2223,22 +2406,47 @@ async def extract_structured_data_from_text(text: str, filename: str) -> Dict:
         logger.warning(f"⚠️ Format/Company mismatch: Format={doc_format}, Company={insurer_name}")
         logger.info(f"🔧 Overriding company name to: Liva Insurance (based on document format)")
         insurer_name = "Liva Insurance"
+        # Update detection metadata when format override occurs
+        original_method = detection_method
+        detection_method = "format_override"
+        detection_confidence = "high"
+        logger.info(f"Format-based override: Changed from {original_method} to format_override")
     elif doc_format == "TAWUNIYA" and "tawuniya" not in insurer_name.lower():
         logger.warning(f"⚠️ Format/Company mismatch: Format={doc_format}, Company={insurer_name}")
         logger.info(f"🔧 Overriding company name to: Tawuniya (based on document format)")
         insurer_name = "Tawuniya"
+        # Update detection metadata when format override occurs
+        original_method = detection_method
+        detection_method = "format_override"
+        detection_confidence = "high"
+        logger.info(f"Format-based override: Changed from {original_method} to format_override")
     elif doc_format == "CHUBB" and "chubb" not in insurer_name.lower():
         logger.warning(f"⚠️ Format/Company mismatch: Format={doc_format}, Company={insurer_name}")
         logger.info(f"🔧 Overriding company name to: Chubb Arabia (based on document format)")
         insurer_name = "Chubb Arabia"
+        # Update detection metadata when format override occurs
+        original_method = detection_method
+        detection_method = "format_override"
+        detection_confidence = "high"
+        logger.info(f"Format-based override: Changed from {original_method} to format_override")
     elif doc_format == "GIG" and "gig" not in insurer_name.lower() and "gulf insurance" not in insurer_name.lower():
         logger.warning(f"⚠️ Format/Company mismatch: Format={doc_format}, Company={insurer_name}")
         logger.info(f"🔧 Overriding company name to: Gulf Insurance Group (GIG) (based on document format)")
         insurer_name = "Gulf Insurance Group (GIG)"
+        # Update detection metadata when format override occurs
+        original_method = detection_method
+        detection_method = "format_override"
+        detection_confidence = "high"
+        logger.info(f"Format-based override: Changed from {original_method} to format_override")
     elif doc_format == "UCA" and "uca" not in insurer_name.lower() and "united cooperative" not in insurer_name.lower():
         logger.warning(f"⚠️ Format/Company mismatch: Format={doc_format}, Company={insurer_name}")
         logger.info(f"🔧 Overriding company name to: United Cooperative Assurance (UCA) (based on document format)")
         insurer_name = "United Cooperative Assurance (UCA)"
+        # Update detection metadata when format override occurs
+        original_method = detection_method
+        detection_method = "format_override"
+        detection_confidence = "high"
+        logger.info(f"Format-based override: Changed from {original_method} to format_override")
     
     sublimits_detected = _extract_sublimits_from_text(text)
     logger.info(f"🎯 Pre-extracted {len(sublimits_detected)} sublimits")
@@ -2936,6 +3144,8 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
         
         final_data = {
             "company_name": raw_data.get('insurer_company_name', insurer_name),
+            "insurer_detection_method": detection_method,
+            "insurer_confidence": detection_confidence,
             "insured_name": raw_data.get('insured_customer_name', insured_name),
             "policy_type": raw_data.get('policy_type', ''),
             "policy_number": raw_data.get('policy_number', ''),
@@ -3212,9 +3422,9 @@ def validate_extraction_quality(extracted_data: Dict) -> Tuple[bool, List[str]]:
 
 class AIParser:
     """Production-ready AI Parser v6.0"""
-    
-    async def extract_structured_data_from_text(self, text: str, filename: str) -> Dict:
-        return await extract_structured_data_from_text(text, filename)
+
+    async def extract_structured_data_from_text(self, text: str, filename: str, pdf_path: Optional[str] = None) -> Dict:
+        return await extract_structured_data_from_text(text, filename, pdf_path)
     
     async def extract_data_from_multiple_documents(self, documents: Dict[str, str]) -> List[ExtractedQuoteData]:
         return await extract_data_from_multiple_documents(documents)

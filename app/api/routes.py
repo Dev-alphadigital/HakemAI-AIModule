@@ -285,17 +285,17 @@ async def compare_insurance_quotes(
             logger.info(f"🤖 Parsing with AI: {file.filename}")
             try:
                 extracted_data = await ai_parser.extract_structured_data_from_text(
-                    text_content, file_info["original_filename"]
+                    text_content, file_info["original_filename"], file_info["file_path"]
                 )
-                
+
                 # Mark as accepted (default)
                 extracted_data["quote_status"] = "accepted"
                 extracted_data["rejection_reason"] = None
-                
+
             except VatPolicyViolation as vat_error:
                 # VAT policy violation - quote is rejected
                 logger.error(f"❌ VAT Policy Violation for {file.filename}: {vat_error.vat_class} - {vat_error.reason}")
-                
+
                 # Create rejected quote data structure
                 extracted_data = {
                     "company_name": "Unknown",  # Will be extracted from filename if possible
@@ -317,9 +317,9 @@ async def compare_insurance_quotes(
                         "details": vat_error.details or {}
                     }
                 }
-                
+
                 logger.warning(f"⚠️ Quote rejected: {file.filename} - {vat_error.reason}")
-                
+
             except Exception as parse_error:
                 # Other parsing errors - still reject but log differently
                 logger.error(f"❌ Parsing failed for {file.filename}: {parse_error}")

@@ -40,6 +40,8 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+test_scripts/
+ocr_result_temp.txt
 
 # Type checking
 .mypy_cache/

@@ -21,6 +21,8 @@ class ExtractedQuoteData(BaseModel):
     
     # Basic Information
     company_name: str = Field(..., description="Insurance company name")
+    insurer_detection_method: Optional[str] = Field(None, description="Detection method: filename, text_match, pattern, ai, ocr, format_override")
+    insurer_confidence: Optional[str] = Field(None, description="Detection confidence: high, medium, low")
     policy_type: Optional[str] = Field(None, description="Type of insurance policy")
     policy_number: Optional[str] = Field(None, description="Policy number if available")
     
