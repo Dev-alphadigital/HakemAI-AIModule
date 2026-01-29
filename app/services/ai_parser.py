@@ -1478,10 +1478,10 @@ def _calculate_premium_from_rate(sum_insured: float, rate_string: str) -> Option
         rate_match = re.search(r'(\d+\.?\d*)', rate_string.replace(',', ''))
         if not rate_match:
             return None
-        
+
         rate_value = float(rate_match.group(1))
         rate_lower = rate_string.lower()
-        
+
         if '‰' in rate_string or 'per mille' in rate_lower or '%o' in rate_string:
             premium = (sum_insured * rate_value) / 1000
         elif '%' in rate_string and 'per mille' not in rate_lower:
@@ -1490,13 +1490,130 @@ def _calculate_premium_from_rate(sum_insured: float, rate_string: str) -> Option
             premium = (sum_insured * rate_value) / 10000
         else:
             premium = (sum_insured * rate_value) / 1000
-        
+
         logger.info(f"💰 Calculated: {premium:.2f} from SI: {sum_insured} × Rate: {rate_string}")
         return premium
-    
+
     except Exception as e:
         logger.error(f"Premium calculation failed: {str(e)}")
         return None
+
+
+def _detect_insurance_category(text: str, policy_type: str) -> Tuple[str, str]:
+    """
+    Detect insurance category from policy type and text content.
+
+    Args:
+        text: Full PDF text
+        policy_type: Extracted policy type string
+
+    Returns:
+        (category, confidence) where:
+        - category: "property", "liability", "medical", "motor", "marine", "engineering", "other"
+        - confidence: "high", "medium", "low"
+    """
+    if not policy_type:
+        policy_type = ""
+
+    policy_lower = policy_type.lower()
+    text_lower = text.lower() if text else ""
+
+    # Liability keywords (highest priority - this is what we're adding support for)
+    liability_keywords = [
+        'liability', 'cgl', 'general liability', 'third party', 'public liability',
+        'professional indemnity', 'professional liability', 'errors and omissions',
+        'e&o', 'employers liability', 'products liability', 'product liability',
+        'd&o', 'directors and officers', 'directors & officers', 'legal liability',
+        'bodily injury liability', 'property damage liability', 'comprehensive general liability'
+    ]
+
+    # Property keywords
+    property_keywords = [
+        'property', 'fire', 'all risk', 'material damage', 'business interruption',
+        'par', 'buildings', 'contents', 'stock', 'machinery breakdown',
+        'commercial property', 'industrial all risks', 'iar'
+    ]
+
+    # Medical keywords
+    medical_keywords = [
+        'medical', 'health', 'malpractice', 'medical malpractice',
+        'clinical negligence', 'healthcare professional'
+    ]
+
+    # Motor keywords
+    motor_keywords = [
+        'motor', 'auto', 'vehicle', 'car', 'fleet', 'comprehensive motor',
+        'third party motor', 'tpl motor'
+    ]
+
+    # Marine keywords
+    marine_keywords = [
+        'marine', 'cargo', 'hull', 'marine cargo', 'ocean marine',
+        'inland marine', 'transit'
+    ]
+
+    # Engineering keywords
+    engineering_keywords = [
+        'engineering', 'contractors', 'erection', 'car', 'ear',
+        'contractors all risks', 'erection all risks', 'machinery breakdown',
+        'boiler and machinery'
+    ]
+
+    # Count matches in policy type (weighted higher)
+    def count_matches(keywords, text_to_check, weight=1.0):
+        count = 0
+        for keyword in keywords:
+            if keyword in text_to_check:
+                count += weight
+        return count
+
+    # Check policy type first (higher weight)
+    policy_scores = {
+        'liability': count_matches(liability_keywords, policy_lower, weight=2.0),
+        'property': count_matches(property_keywords, policy_lower, weight=2.0),
+        'medical': count_matches(medical_keywords, policy_lower, weight=2.0),
+        'motor': count_matches(motor_keywords, policy_lower, weight=2.0),
+        'marine': count_matches(marine_keywords, policy_lower, weight=2.0),
+        'engineering': count_matches(engineering_keywords, policy_lower, weight=2.0),
+    }
+
+    # Check text content (lower weight, first 5000 chars only)
+    text_sample = text_lower[:5000] if text_lower else ""
+    text_scores = {
+        'liability': count_matches(liability_keywords, text_sample, weight=0.5),
+        'property': count_matches(property_keywords, text_sample, weight=0.5),
+        'medical': count_matches(medical_keywords, text_sample, weight=0.5),
+        'motor': count_matches(motor_keywords, text_sample, weight=0.5),
+        'marine': count_matches(marine_keywords, text_sample, weight=0.5),
+        'engineering': count_matches(engineering_keywords, text_sample, weight=0.5),
+    }
+
+    # Combine scores
+    total_scores = {
+        category: policy_scores[category] + text_scores[category]
+        for category in policy_scores.keys()
+    }
+
+    # Find best match
+    if max(total_scores.values()) == 0:
+        return "other", "low"
+
+    best_category = max(total_scores, key=total_scores.get)
+    best_score = total_scores[best_category]
+
+    # Determine confidence
+    if best_score >= 3.0:
+        confidence = "high"
+    elif best_score >= 1.5:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    logger.info(f"🔍 Insurance Category Detection: {best_category} (confidence: {confidence}, score: {best_score:.1f})")
+    logger.debug(f"  Policy Type: '{policy_type}'")
+    logger.debug(f"  Scores: {total_scores}")
+
+    return best_category, confidence
 
 
 def _comprehensive_vat_detection(text: str, prem_info: Dict) -> Dict:
@@ -2450,12 +2567,139 @@ async def extract_structured_data_from_text(text: str, filename: str, pdf_path: 
     
     sublimits_detected = _extract_sublimits_from_text(text)
     logger.info(f"🎯 Pre-extracted {len(sublimits_detected)} sublimits")
-    
+
+    # ========================================================================
+    # STAGE 2.5: INSURANCE CATEGORY DETECTION
+    # ========================================================================
+
+    # Early category detection to guide Stage 3 extraction
+    # We'll do a preliminary detection based on filename/text, then refine after policy_type extraction
+    preliminary_policy_type = ""
+
+    # Try to extract policy type early for better category detection
+    policy_type_patterns = [
+        r'Policy Type[:\s]+([^\n]{5,100})',
+        r'Class of Insurance[:\s]+([^\n]{5,100})',
+        r'Type of Cover[:\s]+([^\n]{5,100})',
+        r'Insurance Type[:\s]+([^\n]{5,100})',
+    ]
+    for pattern in policy_type_patterns:
+        match = re.search(pattern, text[:5000], re.IGNORECASE)
+        if match:
+            preliminary_policy_type = match.group(1).strip()
+            logger.info(f"📋 Preliminary policy type detected: {preliminary_policy_type}")
+            break
+
+    insurance_category, category_confidence = _detect_insurance_category(text, preliminary_policy_type)
+    logger.info(f"🔍 Insurance Category: {insurance_category} (confidence: {category_confidence})")
+
     # ========================================================================
     # STAGE 3: COMPREHENSIVE DATA EXTRACTION
     # ========================================================================
-    
+
+    # Build insurance-type-specific instructions
+    if insurance_category == 'liability':
+        insurance_specific_instructions = """
+**CRITICAL: INSURANCE TYPE AWARENESS**
+
+This quote has been identified as: **LIABILITY INSURANCE** (CGL, Third Party, Professional Indemnity, Product Liability).
+
+🔍 **LIABILITY INSURANCE - SPECIAL EXTRACTION RULES:**
+
+**Sum Insured Semantics:**
+- Represents EXPOSURE to third-party claims (bodily injury, property damage, legal liability)
+- OR based on insured's annual turnover/revenue
+- NOT tied to physical asset value
+- Higher sum insured = BETTER protection (more coverage for claims)
+
+**Limit Structures to Extract:**
+
+1. **Per Claim/Per Occurrence Limit**: Maximum payout for a single claim/incident
+   - Look for: "per claim", "per occurrence", "any one claim", "each occurrence"
+   - Example: "SAR 10M any one claim"
+
+2. **Aggregate Annual Limit**: Maximum total payout for ALL claims in one year
+   - Look for: "in the aggregate", "annual aggregate", "total limit"
+   - Example: "SAR 50M in the aggregate"
+   - Example: "SAR 10M per occurrence / SAR 50M aggregate"
+
+3. **Turnover-Based Limits**: Coverage calculated from annual revenue
+   - Look for: "times annual turnover", "x turnover", "based on turnover"
+   - Example: "2 times annual turnover"
+   - Example: "SAR 50M or 2x turnover, whichever is higher"
+   - Extract: multiplier, cap (if any), annual turnover (if stated)
+
+4. **Defense Costs Structure** - CRITICAL:
+   - **Inside the Limit**: Defense costs REDUCE available coverage
+     * "SAR 10M inclusive of defense costs"
+     * "defense costs within the limit"
+     * "inclusive of legal expenses"
+   - **Outside the Limit**: Defense costs paid SEPARATELY (better coverage)
+     * "SAR 10M plus unlimited defense costs"
+     * "defense costs in addition to the limit"
+     * "defense costs over and above"
+     * "legal expenses in addition"
+
+5. **Claims-Made Specific Fields**:
+   - **Retroactive Date**: Coverage only for claims arising after this date
+   - **Extended Reporting Period (ERP)**: Tail coverage period after policy expires
+
+**Extract as:**
+```json
+{
+  "liability_limit_structure": {
+    "per_claim_occurrence_limit": 10000000,
+    "aggregate_annual_limit": 50000000,
+    "is_turnover_based": false,
+    "turnover_multiplier": null,
+    "turnover_cap": null,
+    "annual_turnover": null,
+    "defense_costs_inside_limit": true,
+    "defense_costs_sublimit": null,
+    "retroactive_date": "2024-01-01",
+    "extended_reporting_period": "24 months"
+  }
+}
+```
+
+**Note:** If limits are turnover-based, set `is_turnover_based: true` and extract multiplier/cap.
+"""
+    elif insurance_category == 'property':
+        insurance_specific_instructions = """
+**CRITICAL: INSURANCE TYPE AWARENESS**
+
+This quote has been identified as: **PROPERTY INSURANCE** (Fire, All Risk, Material Damage, Business Interruption).
+
+🏢 **PROPERTY INSURANCE - STANDARD EXTRACTION:**
+
+**Sum Insured Semantics:**
+- Represents VALUE of physical assets being insured
+- Based on actual asset value, replacement cost, or agreed value
+- Higher sum insured = Insuring more valuable property
+
+**No liability_limit_structure needed** - This field should remain `null` for property insurance.
+
+Focus on:
+- Sum insured breakdown (Material Damage, Business Interruption)
+- Deductibles
+- Standard property coverage benefits
+"""
+    else:
+        insurance_specific_instructions = """
+**CRITICAL: INSURANCE TYPE AWARENESS**
+
+This quote has been identified as: **{category_upper}** insurance.
+
+Extract all standard insurance information. If this is liability insurance but not detected correctly, look for liability-specific limit structures (per claim, aggregate, defense costs).
+""".format(category_upper=insurance_category.upper())
+
     system_prompt_stage3 = f"""You are an EXPERT insurance data extraction specialist.
+
+{insurance_specific_instructions}
+
+CRITICAL ENTITY IDENTIFICATION:
+- INSURER (Insurance Company): {insurer_name}
+- INSURED (Customer): {insured_name}
 
 CRITICAL ENTITY IDENTIFICATION:
 - INSURER (Insurance Company): {insurer_name}
@@ -2501,6 +2745,7 @@ COMPLETENESS:
 PRE-IDENTIFIED:
 - INSURER: {insurer_name}
 - INSURED: {insured_name}
+- INSURANCE CATEGORY: {insurance_category.upper()} (confidence: {category_confidence})
 
 DOCUMENT TEXT:
 {text[:28000]}
@@ -2519,7 +2764,20 @@ Extract as JSON:
     "total_sum_insured_numeric": 1564652306.28,
     "total_sum_insured": "SR 1,564,652,306"
   }},
-  
+
+  "liability_limit_structure": {{
+    "per_claim_occurrence_limit": 10000000,
+    "aggregate_annual_limit": 50000000,
+    "is_turnover_based": false,
+    "turnover_multiplier": null,
+    "turnover_cap": null,
+    "annual_turnover": null,
+    "defense_costs_inside_limit": true,
+    "defense_costs_sublimit": null,
+    "retroactive_date": null,
+    "extended_reporting_period": null
+  }},
+
   "rate_information": {{
     "rate_text_raw": "EXACT rate text (CRITICAL: if pattern like '66,340.70 @ 0.1615 percent', extract '0.1615' NOT '66')",
     "rate_numeric_value": 0.38,
@@ -3142,6 +3400,32 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
         operational = stage4_data.get('operational_details', {})
         brokerage = stage4_data.get('brokerage_and_fees', {})
         
+        # Extract and parse liability structure if liability insurance
+        liability_structure_data = None
+        if insurance_category == 'liability':
+            liability_raw = raw_data.get('liability_limit_structure', {})
+            if liability_raw and isinstance(liability_raw, dict):
+                try:
+                    from app.models.scheme import LiabilityLimitStructure
+
+                    liability_structure_data = LiabilityLimitStructure(
+                        per_claim_limit=_parse_currency_amount(str(liability_raw.get('per_claim_occurrence_limit', ''))) if liability_raw.get('per_claim_occurrence_limit') else None,
+                        aggregate_annual_limit=_parse_currency_amount(str(liability_raw.get('aggregate_annual_limit', ''))) if liability_raw.get('aggregate_annual_limit') else None,
+                        turnover_based=liability_raw.get('is_turnover_based', False),
+                        turnover_multiplier=liability_raw.get('turnover_multiplier'),
+                        annual_turnover=_parse_currency_amount(str(liability_raw.get('annual_turnover', ''))) if liability_raw.get('annual_turnover') else None,
+                        turnover_cap=_parse_currency_amount(str(liability_raw.get('turnover_cap', ''))) if liability_raw.get('turnover_cap') else None,
+                        defense_costs_inside_limit=liability_raw.get('defense_costs_inside_limit'),
+                        defense_costs_sublimit=_parse_currency_amount(str(liability_raw.get('defense_costs_sublimit', ''))) if liability_raw.get('defense_costs_sublimit') else None,
+                        retroactive_date=liability_raw.get('retroactive_date'),
+                        extended_reporting_period=liability_raw.get('extended_reporting_period')
+                    ).model_dump(exclude_none=True)
+
+                    logger.info(f"✅ Liability structure extracted: {liability_structure_data}")
+                except Exception as e:
+                    logger.error(f"❌ Error parsing liability structure: {e}")
+                    liability_structure_data = None
+
         final_data = {
             "company_name": raw_data.get('insurer_company_name', insurer_name),
             "insurer_detection_method": detection_method,
@@ -3149,6 +3433,10 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
             "insured_name": raw_data.get('insured_customer_name', insured_name),
             "policy_type": raw_data.get('policy_type', ''),
             "policy_number": raw_data.get('policy_number', ''),
+
+            # Insurance Category Detection (Phase 2 - Liability Support)
+            "insurance_category": insurance_category,
+            "insurance_category_confidence": category_confidence,
 
             # PREMIUM FIELDS (VAT v8.0 - Preserves Original Semantics)
             "premium_amount": final_premium,  # Normalized premium (always VAT-exclusive for comparison)
@@ -3180,7 +3468,10 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
             "deductible": applicable_deductible_summary,
             "coverage_limit": si_breakdown.get('total_sum_insured', ''),
             "sum_insured_total": total_si or 0,  # CRITICAL FIX: Add numeric sum insured
-            
+
+            # Liability-Specific Structure (Phase 2 - only populated for liability insurance)
+            "liability_structure": liability_structure_data,
+
             "key_benefits": benefits_list,  # NO LIMIT - show all
             "exclusions": exclusions_list,  # NO LIMIT - show all
             "warranties": warranties_list,  # NO LIMIT - show all

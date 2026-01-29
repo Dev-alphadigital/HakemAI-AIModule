@@ -13,6 +13,74 @@ from datetime import datetime
 # CORE MODELS
 # ========================================================================
 
+class LiabilityLimitStructure(BaseModel):
+    """
+    Liability insurance limit structure - differs fundamentally from property insurance.
+
+    In liability insurance:
+    - Sum insured = exposure to third-party claims OR annual turnover
+    - Limits defined per claim AND/OR per year (aggregate)
+    - Defense costs may be inside or outside the limit
+
+    This structure captures these liability-specific characteristics.
+    """
+    per_claim_limit: Optional[float] = Field(
+        None,
+        description="Maximum payout per single claim/occurrence (third-party liability)"
+    )
+
+    aggregate_annual_limit: Optional[float] = Field(
+        None,
+        description="Maximum total payout for all claims in one year"
+    )
+
+    turnover_based: Optional[bool] = Field(
+        False,
+        description="Whether limits are calculated from annual turnover (e.g., '2x turnover')"
+    )
+
+    turnover_multiplier: Optional[float] = Field(
+        None,
+        description="Multiplier of annual turnover if turnover-based (e.g., 2.0 for '2x turnover')"
+    )
+
+    annual_turnover: Optional[float] = Field(
+        None,
+        description="Insured's annual turnover/revenue if turnover-based limits apply"
+    )
+
+    turnover_cap: Optional[float] = Field(
+        None,
+        description="Maximum cap for turnover-based limits (e.g., 'SAR 50M or 2x turnover, whichever is lower')"
+    )
+
+    defense_costs_inside_limit: Optional[bool] = Field(
+        None,
+        description="True if legal defense costs reduce available coverage limit. False if defense costs are paid separately (better coverage)."
+    )
+
+    defense_costs_sublimit: Optional[float] = Field(
+        None,
+        description="Separate sublimit for legal defense costs if applicable"
+    )
+
+    retroactive_date: Optional[str] = Field(
+        None,
+        description="Retroactive date for claims-made policies (coverage only for claims arising after this date)"
+    )
+
+    extended_reporting_period: Optional[str] = Field(
+        None,
+        description="ERP/tail coverage period (e.g., '12 months', '24 months')"
+    )
+
+    class Config:
+        extra = "allow"
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
+
 class ExtractedQuoteData(BaseModel):
     """
     Structured data extracted from insurance quote PDF.
@@ -25,6 +93,17 @@ class ExtractedQuoteData(BaseModel):
     insurer_confidence: Optional[str] = Field(None, description="Detection confidence: high, medium, low")
     policy_type: Optional[str] = Field(None, description="Type of insurance policy")
     policy_number: Optional[str] = Field(None, description="Policy number if available")
+
+    # Insurance Category Detection (NEW - for liability vs property differentiation)
+    insurance_category: Optional[str] = Field(
+        None,
+        description="Insurance category: property, liability, medical, motor, marine, engineering, other"
+    )
+
+    insurance_category_confidence: Optional[str] = Field(
+        None,
+        description="Confidence in category detection: high, medium, low"
+    )
     
     # Pricing Information
     premium_amount: Optional[float] = Field(None, description="Premium amount")
@@ -53,7 +132,13 @@ class ExtractedQuoteData(BaseModel):
     coverage_limit: Optional[str] = Field(None, description="Maximum coverage (string display)")
     sum_insured_total: Optional[float] = Field(None, description="Total sum insured (numeric value)")  # CRITICAL FIX
     coverage_percentage: Optional[float] = Field(None, description="Coverage percentage")
-    
+
+    # Liability-Specific Structure (NEW - only populated for liability insurance)
+    liability_structure: Optional[LiabilityLimitStructure] = Field(
+        None,
+        description="Liability-specific limit structure (per-claim, aggregate, turnover-based, defense costs). Only populated when insurance_category='liability'."
+    )
+
     # Detailed Features
     key_benefits: List[str] = Field(default_factory=list, description="Key coverage benefits")
     exclusions: List[str] = Field(default_factory=list, description="Policy exclusions")

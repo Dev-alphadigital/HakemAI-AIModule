@@ -57,3 +57,6 @@ build/
 *.egg-info/
 
 test_pdfs/
+
+# Documentation (markdown files)
+*.md

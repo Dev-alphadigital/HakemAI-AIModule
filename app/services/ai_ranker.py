@@ -189,13 +189,42 @@ DEFAULT_WEIGHTS = {
     'warranties': 0.04,     # Warranties - 4% (fewer warranties = better)
     'extensions': 0.04,     # Extensions - 4% (more extensions = better)
     'subjectivities': 0.02, # Subjectivities - 2% (fewer subjectivities = better)
-    
+
     # Hakim Score (30% total)
     'provider_reputation': 0.30,  # MANDATORY - Reputation & Financial Stability (Hakim Score) - 30%
-    
+
     # Total: 1.00 (100%)
     # NOTE: 70% from quote factors, 30% from Hakim Score (reputation & financial stability)
 }
+
+
+# ============================================================================
+# LIABILITY INSURANCE WEIGHTS v1.0 - Coverage-Limit-Aware Scoring
+# Different from property: Higher coverage limits are BETTER (more protection)
+# ============================================================================
+
+LIABILITY_WEIGHTS = {
+    # Coverage Factors (40% total) - Emphasize coverage adequacy
+    'per_claim_coverage': 0.20,      # Higher per-claim limit = better protection
+    'aggregate_coverage': 0.10,      # Higher aggregate vs per-claim = better
+    'defense_costs_bonus': 0.08,     # Defense costs outside limit = better
+    'coverage_breadth': 0.02,        # Benefits, extensions
+
+    # Pricing Factors (25% total) - Premium efficiency, not absolute premium
+    'premium_efficiency': 0.15,      # Premium per SAR 1M of coverage (lower = better)
+    'rate': 0.10,                    # Rate still matters but less weight
+
+    # Quality Factors (5% total)
+    'exclusions': 0.03,              # Fewer exclusions = better
+    'warranties': 0.02,              # Fewer warranties = better
+
+    # Hakim Score (30% total) - Same as property
+    'provider_reputation': 0.30,     # Provider reputation and financial stability
+
+    # Total: 100% (0.20+0.10+0.08+0.02+0.15+0.10+0.03+0.02+0.30 = 1.00)
+}
+
+logger.info("Liability scoring weights configured: Coverage-limit-aware evaluation")
 
 
 # ============================================================================
@@ -806,8 +835,293 @@ def _calculate_weighted_score(
     
     # Ensure score is between 0 and 100
     total_score = max(0.0, min(100.0, total_score))
-    
+
     return round(total_score, 2), score_breakdown
+
+
+def _calculate_liability_score(
+    quote: ExtractedQuoteData,
+    all_quotes: List[ExtractedQuoteData],
+    weights: Dict[str, float] = None
+) -> Tuple[float, Dict[str, float]]:
+    """
+    Calculate weighted score for LIABILITY insurance quotes.
+
+    KEY DIFFERENCES FROM PROPERTY INSURANCE:
+    - Sum insured represents COVERAGE LIMIT (exposure to claims), not asset value
+    - Higher coverage limits are BETTER (more protection)
+    - Premium evaluated relative to coverage provided (premium per SAR 1M)
+    - Defense costs outside limit is a significant advantage
+    - Aggregate limits provide additional protection beyond per-claim
+
+    Args:
+        quote: Quote to score
+        all_quotes: All liability quotes in comparison set
+        weights: Custom weights (defaults to LIABILITY_WEIGHTS)
+
+    Returns:
+        (total_score, score_breakdown)
+    """
+    if weights is None:
+        weights = LIABILITY_WEIGHTS
+
+    score_breakdown = {}
+
+    # Extract liability structure
+    liability = getattr(quote, 'liability_structure', None)
+
+    # COMPONENT 1: PER-CLAIM COVERAGE SCORE (20%)
+    # Higher per-claim limit = better protection for single large claims
+    if liability and hasattr(liability, 'per_claim_limit') and liability.per_claim_limit:
+        per_claim_limit = float(liability.per_claim_limit)
+    else:
+        # Fallback to sum_insured_total
+        per_claim_limit = float(quote.sum_insured_total) if quote.sum_insured_total else 0.0
+
+    # Get all per-claim limits for normalization
+    all_per_claim_limits = []
+    for q in all_quotes:
+        q_liability = getattr(q, 'liability_structure', None)
+        if q_liability and hasattr(q_liability, 'per_claim_limit') and q_liability.per_claim_limit:
+            all_per_claim_limits.append(float(q_liability.per_claim_limit))
+        elif q.sum_insured_total:
+            all_per_claim_limits.append(float(q.sum_insured_total))
+
+    if all_per_claim_limits and max(all_per_claim_limits) > 0:
+        # Normalize: Higher limit = higher score
+        per_claim_score = (per_claim_limit / max(all_per_claim_limits)) * 100
+    else:
+        per_claim_score = 50  # Default
+
+    score_breakdown['per_claim_coverage'] = per_claim_score * weights['per_claim_coverage']
+    logger.debug(f"  Per-Claim Coverage: {per_claim_score:.1f} (limit: SAR {per_claim_limit:,.0f})")
+
+    # COMPONENT 2: AGGREGATE COVERAGE BONUS (10%)
+    # If aggregate > per-claim, provider offers more total coverage
+    aggregate_bonus_score = 50  # Default neutral
+
+    if liability and hasattr(liability, 'aggregate_annual_limit') and liability.aggregate_annual_limit:
+        aggregate_limit = float(liability.aggregate_annual_limit)
+
+        if per_claim_limit > 0:
+            aggregate_ratio = aggregate_limit / per_claim_limit
+
+            # Score based on ratio:
+            # 1.0x (aggregate = per-claim) = 50 points
+            # 2.0x = 75 points
+            # 5.0x = 100 points
+            if aggregate_ratio >= 5.0:
+                aggregate_bonus_score = 100
+            elif aggregate_ratio >= 2.0:
+                aggregate_bonus_score = 50 + ((aggregate_ratio - 2.0) / 3.0) * 50
+            elif aggregate_ratio >= 1.0:
+                aggregate_bonus_score = 50 + ((aggregate_ratio - 1.0) / 1.0) * 25
+            else:
+                # Aggregate < per-claim is unusual but possible
+                aggregate_bonus_score = 30
+
+            logger.debug(f"  Aggregate Bonus: {aggregate_bonus_score:.1f} (ratio: {aggregate_ratio:.1f}x)")
+
+    score_breakdown['aggregate_coverage'] = aggregate_bonus_score * weights['aggregate_coverage']
+
+    # COMPONENT 3: DEFENSE COSTS BONUS (8%)
+    # Defense costs outside limit = better coverage
+    defense_costs_score = 50  # Default unknown
+
+    if liability and hasattr(liability, 'defense_costs_inside_limit'):
+        if liability.defense_costs_inside_limit is False:
+            # Defense costs OUTSIDE limit (better)
+            defense_costs_score = 100
+            logger.debug(f"  Defense Costs: Outside limit (BEST) = {defense_costs_score}")
+        elif liability.defense_costs_inside_limit is True:
+            # Defense costs INSIDE limit (reduces available coverage)
+            defense_costs_score = 40
+            logger.debug(f"  Defense Costs: Inside limit (reduces coverage) = {defense_costs_score}")
+
+    score_breakdown['defense_costs_bonus'] = defense_costs_score * weights['defense_costs_bonus']
+
+    # COMPONENT 4: COVERAGE BREADTH (7%)
+    # Same as property: benefits, extensions
+    benefits_count = len(quote.key_benefits or [])
+    all_benefits_counts = [len(q.key_benefits or []) for q in all_quotes]
+
+    if all_benefits_counts and max(all_benefits_counts) > 0:
+        coverage_breadth_score = (benefits_count / max(all_benefits_counts)) * 100
+    else:
+        coverage_breadth_score = 50
+
+    score_breakdown['coverage_breadth'] = coverage_breadth_score * weights['coverage_breadth']
+
+    # COMPONENT 5: PREMIUM EFFICIENCY (15%)
+    # Premium per SAR 1M of coverage (lower = better value)
+    premium = _normalize_premium(quote.premium_amount) or 0
+
+    if per_claim_limit > 0 and premium > 0:
+        premium_per_million = (premium / per_claim_limit) * 1_000_000
+
+        # Get all premium efficiency ratios
+        all_efficiency_ratios = []
+        for q in all_quotes:
+            q_liability = getattr(q, 'liability_structure', None)
+            q_limit = 0
+
+            if q_liability and hasattr(q_liability, 'per_claim_limit') and q_liability.per_claim_limit:
+                q_limit = float(q_liability.per_claim_limit)
+            elif q.sum_insured_total:
+                q_limit = float(q.sum_insured_total)
+
+            q_premium = _normalize_premium(q.premium_amount) or 0
+
+            if q_limit > 0 and q_premium > 0:
+                all_efficiency_ratios.append((q_premium / q_limit) * 1_000_000)
+
+        if all_efficiency_ratios and min(all_efficiency_ratios) > 0:
+            # Lower premium per million = better efficiency = higher score
+            min_ratio = min(all_efficiency_ratios)
+
+            # Score inversely proportional to premium per million
+            efficiency_score = 100 - min(100, ((premium_per_million - min_ratio) / min_ratio * 100))
+            efficiency_score = max(0, efficiency_score)
+        else:
+            efficiency_score = 50
+
+        logger.debug(f"  Premium Efficiency: {efficiency_score:.1f} (SAR {premium_per_million:,.0f} per million)")
+    else:
+        efficiency_score = 30  # Invalid data
+
+    score_breakdown['premium_efficiency'] = efficiency_score * weights['premium_efficiency']
+
+    # COMPONENT 6: RATE (10%)
+    # Same logic as property, but lower weight
+    rate_value = _extract_rate_value(quote.rate)
+    all_rates = [_extract_rate_value(q.rate) for q in all_quotes if _extract_rate_value(q.rate) > 0]
+
+    if all_rates and max(all_rates) > min(all_rates):
+        # Lower rate = better
+        rate_score = 100 - ((rate_value - min(all_rates)) / (max(all_rates) - min(all_rates)) * 100)
+        rate_score = max(0, min(100, rate_score))
+    else:
+        rate_score = 50
+
+    score_breakdown['rate'] = rate_score * weights['rate']
+
+    # COMPONENT 7: EXCLUSIONS (5%)
+    # Same as property
+    exclusions_count = len(quote.exclusions or [])
+    all_exclusions_counts = [len(q.exclusions or []) for q in all_quotes]
+
+    if all_exclusions_counts and max(all_exclusions_counts) > 0:
+        exclusions_score = 100 - ((exclusions_count / max(all_exclusions_counts)) * 100)
+    else:
+        exclusions_score = 50
+
+    score_breakdown['exclusions'] = exclusions_score * weights['exclusions']
+
+    # COMPONENT 8: WARRANTIES (4%)
+    # Same as property
+    warranties_count = len(quote.warranties or [])
+    all_warranties_counts = [len(q.warranties or []) for q in all_quotes]
+
+    if all_warranties_counts and max(all_warranties_counts) > 0:
+        warranties_score = 100 - ((warranties_count / max(all_warranties_counts)) * 100)
+    else:
+        warranties_score = 50
+
+    score_breakdown['warranties'] = warranties_score * weights['warranties']
+
+    # COMPONENT 9: HAKIM SCORE (30%)
+    # Same as property
+    ia_compliant = getattr(quote, 'ia_compliant', False)
+    hakim_score, hakim_tier, hakim_rank = _get_hakim_score(quote.company_name, ia_compliant)
+
+    score_breakdown['provider_reputation'] = hakim_score * weights['provider_reputation']
+    score_breakdown['hakim_score'] = hakim_score
+    score_breakdown['hakim_tier'] = hakim_tier
+    score_breakdown['hakim_rank'] = hakim_rank
+
+    # TOTAL SCORE
+    total_score = sum([
+        score_breakdown.get('per_claim_coverage', 0),
+        score_breakdown.get('aggregate_coverage', 0),
+        score_breakdown.get('defense_costs_bonus', 0),
+        score_breakdown.get('coverage_breadth', 0),
+        score_breakdown.get('premium_efficiency', 0),
+        score_breakdown.get('rate', 0),
+        score_breakdown.get('exclusions', 0),
+        score_breakdown.get('warranties', 0),
+        score_breakdown.get('provider_reputation', 0),
+    ])
+
+    logger.info(f"LIABILITY SCORE for {quote.company_name}: {total_score:.2f}/100")
+    logger.debug(f"  Breakdown: Coverage={score_breakdown.get('per_claim_coverage', 0):.1f}, "
+                 f"Efficiency={score_breakdown.get('premium_efficiency', 0):.1f}, "
+                 f"Defense={score_breakdown.get('defense_costs_bonus', 0):.1f}, "
+                 f"Hakim={score_breakdown.get('provider_reputation', 0):.1f}")
+
+    return total_score, score_breakdown
+
+
+def _calculate_score_by_category(
+    quote: ExtractedQuoteData,
+    all_quotes: List[ExtractedQuoteData],
+    weights: Dict[str, float] = None
+) -> Tuple[float, Dict[str, float]]:
+    """
+    Route to appropriate scoring function based on insurance category.
+
+    Args:
+        quote: Quote to score
+        all_quotes: All quotes in comparison (for normalization context)
+        weights: Optional custom weights
+
+    Returns:
+        (total_score, score_breakdown)
+    """
+    # Detect category
+    category = getattr(quote, 'insurance_category', None)
+
+    if not category:
+        # Fallback: Try to infer from policy_type
+        policy_type = getattr(quote, 'policy_type', '') or ''
+        policy_lower = policy_type.lower()
+
+        if any(k in policy_lower for k in ['liability', 'cgl', 'third party', 'professional indemnity']):
+            category = 'liability'
+        else:
+            category = 'property'  # Default
+
+    logger.info(f"Scoring {quote.company_name} as {category.upper()} insurance")
+
+    # Route to appropriate scoring function
+    if category == 'liability':
+        return _calculate_liability_score(quote, all_quotes, weights)
+    else:
+        # Property and other types use existing weighted score
+        # Need to extract all the list parameters from all_quotes
+        all_premiums = [_get_normalized_premium_for_comparison(q) for q in all_quotes]
+        all_rates = [_extract_rate_value(q.rate) for q in all_quotes]
+        all_benefits_counts = [len(q.key_benefits or []) for q in all_quotes]
+        all_exclusions_counts = [len(q.exclusions or []) for q in all_quotes]
+        all_warranties_counts = [len(q.warranties or []) for q in all_quotes]
+
+        all_extensions_counts = []
+        all_subjectivities_counts = []
+        for q in all_quotes:
+            extended = getattr(q, '_extended_data', {}) or {}
+            extensions_data = extended.get('extensions_and_conditions', {})
+            extensions_list = extensions_data.get('extensions_list', []) if isinstance(extensions_data, dict) else []
+            all_extensions_counts.append(len(extensions_list))
+
+            subjectivities = _extract_subjectivities(q)
+            all_subjectivities_counts.append(len(subjectivities))
+
+        if weights is None:
+            weights = DEFAULT_WEIGHTS.copy()
+
+        return _calculate_weighted_score(
+            quote, all_premiums, all_rates, all_benefits_counts, all_exclusions_counts,
+            all_warranties_counts, all_extensions_counts, all_subjectivities_counts, weights
+        )
 
 
 async def _get_ai_ranking_analysis(
@@ -1602,10 +1916,12 @@ async def rank_and_compare_quotes(
         
         analysis_details = getattr(quote, '_analysis_details', {}) or {}
         score_breakdown = analysis_details.get('score_breakdown', {})
-        
-        weighted_score, weighted_breakdown = _calculate_weighted_score(
-            quote, all_premiums, all_rates, all_benefits_counts, all_exclusions_counts, 
-            all_warranties_counts, all_extensions_counts, all_subjectivities_counts, weights
+
+        # Use category-aware scoring router
+        weighted_score, weighted_breakdown = _calculate_score_by_category(
+            quote=quote,
+            all_quotes=quotes,
+            weights=weights
         )
         
         client_name = getattr(quote, 'client_name', None) or getattr(quote, 'insured_name', 'Not specified')

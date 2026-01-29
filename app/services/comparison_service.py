@@ -17,18 +17,30 @@ class ComparisonService:
         """
         Group quotes by policy type for valid comparisons.
         Only quotes of the same type can be compared.
-        
+
+        UPDATED: Now uses insurance_category field if available (from Phase 2).
+
         Args:
             quotes: List of all extracted quotes
-            
+
         Returns:
             Dictionary with policy type as key, list of quotes as value
         """
         grouped = defaultdict(list)
-        
+
         for quote in quotes:
+            # PRIORITY 1: Use insurance_category if available (from Phase 2 AI parser)
+            category = getattr(quote, 'insurance_category', None)
+
+            if category:
+                # Category already detected by AI parser - use it directly
+                grouped[category].append(quote)
+                logger.info(f"📂 Grouped '{quote.company_name}' using insurance_category: {category}")
+                continue
+
+            # PRIORITY 2: Fallback to keyword detection (backward compatibility)
             policy_type = quote.policy_type.lower() if quote.policy_type else "unknown"
-            
+
             if any(keyword in policy_type for keyword in ['property', 'fire', 'all risk', 'material damage', 'business interruption', 'par']):
                 category = 'property'
             elif any(keyword in policy_type for keyword in ['liability', 'cgl', 'general liability', 'third party', 'public liability']):
@@ -43,10 +55,10 @@ class ComparisonService:
                 category = 'engineering'
             else:
                 category = 'other'
-            
+
             grouped[category].append(quote)
-            logger.info(f"📂 Grouped '{quote.company_name}' ({quote.policy_type}) into category: {category}")
-        
+            logger.info(f"📂 Grouped '{quote.company_name}' ({quote.policy_type}) into category: {category} (keyword fallback)")
+
         return dict(grouped)
     
     @staticmethod
@@ -114,8 +126,11 @@ class ComparisonService:
         if not ComparisonService.validate_comparable_quotes(quote1, quote2):
             logger.warning(f"❌ Cannot compare {quote1.company_name} with {quote2.company_name} - different policy types")
             return None
-        
-        logger.info(f"✅ Comparing {quote1.company_name} vs {quote2.company_name}")
+
+        # Log categories being compared
+        cat1 = getattr(quote1, 'insurance_category', 'unknown')
+        cat2 = getattr(quote2, 'insurance_category', 'unknown')
+        logger.info(f"✅ Comparing {quote1.company_name} ({cat1}) vs {quote2.company_name} ({cat2})")
         
         price1 = quote1.premium_amount or 0
         price2 = quote2.premium_amount or 0
@@ -148,31 +163,38 @@ class ComparisonService:
         """
         Rank quotes within each policy type category.
         NEVER ranks quotes of different types together.
-        
+
+        UPDATED: Now uses insurance_category field for better categorization.
+
         Args:
             quotes: List of all quotes
-            
+
         Returns:
             Dictionary with policy type as key, ranked list of quotes as value
         """
         # Filter out rejected quotes
         valid_quotes = [
-            q for q in quotes 
+            q for q in quotes
             if getattr(q, 'quote_status', 'accepted') == 'accepted'
         ]
-        
+
         if len(valid_quotes) < len(quotes):
             logger.warning(f"⚠️ ComparisonService: Filtered out {len(quotes) - len(valid_quotes)} rejected quote(s)")
-        
+
         grouped = ComparisonService.group_quotes_by_policy_type(valid_quotes)
-        
+
         results = {}
-        
+
         for policy_type, quotes_list in grouped.items():
             if len(quotes_list) == 0:
                 continue
-            
-            logger.info(f"📊 Ranking {len(quotes_list)} {policy_type} quotes")
+
+            # Log which category is being ranked
+            logger.info(f"📊 Ranking {len(quotes_list)} {policy_type.upper()} quotes (category-aware scoring will be applied)")
+
+            # NOTE: The actual scoring happens in ai_ranker.py which now uses _calculate_score_by_category()
+            # This ensures LIABILITY quotes are scored with coverage-limit-aware logic
+            # and PROPERTY quotes are scored with asset-value logic
             
             sorted_quotes = sorted(
                 quotes_list,
@@ -224,16 +246,121 @@ class ComparisonService:
     @staticmethod
     def _compare_coverage(quote1: ExtractedQuoteData, quote2: ExtractedQuoteData) -> str:
         """Compare coverage between two quotes."""
+
+        # NEW: Route to liability-specific comparison if both are liability
+        category1 = getattr(quote1, 'insurance_category', None)
+        category2 = getattr(quote2, 'insurance_category', None)
+
+        if category1 == 'liability' and category2 == 'liability':
+            return ComparisonService._compare_coverage_liability(quote1, quote2)
+
+        # Existing property comparison logic below (unchanged)
         benefits1 = len(quote1.key_benefits)
         benefits2 = len(quote2.key_benefits)
-        
+
         if benefits1 > benefits2:
             return f"{quote1.company_name} offers {benefits1 - benefits2} more benefits"
         elif benefits2 > benefits1:
             return f"{quote2.company_name} offers {benefits2 - benefits1} more benefits"
         else:
             return "Similar coverage levels"
-    
+
+    @staticmethod
+    def _compare_coverage_liability(quote1: ExtractedQuoteData, quote2: ExtractedQuoteData) -> str:
+        """
+        Compare coverage between two LIABILITY insurance quotes.
+
+        Focuses on:
+        - Per-claim limits (higher is better)
+        - Aggregate limits (higher is better)
+        - Defense costs structure (outside limit is better)
+
+        Args:
+            quote1: First liability quote
+            quote2: Second liability quote
+
+        Returns:
+            Comparison summary string
+        """
+        # Extract liability structures
+        liability1 = getattr(quote1, 'liability_structure', None)
+        liability2 = getattr(quote2, 'liability_structure', None)
+
+        # Get per-claim limits
+        if liability1 and hasattr(liability1, 'per_claim_limit') and liability1.per_claim_limit:
+            limit1 = float(liability1.per_claim_limit)
+        else:
+            limit1 = float(quote1.sum_insured_total) if quote1.sum_insured_total else 0
+
+        if liability2 and hasattr(liability2, 'per_claim_limit') and liability2.per_claim_limit:
+            limit2 = float(liability2.per_claim_limit)
+        else:
+            limit2 = float(quote2.sum_insured_total) if quote2.sum_insured_total else 0
+
+        # Compare per-claim limits
+        comparison_parts = []
+
+        if limit1 > limit2 and limit2 > 0:
+            diff = limit1 - limit2
+            pct_diff = (diff / limit2) * 100
+            comparison_parts.append(
+                f"{quote1.company_name} offers SAR {diff:,.0f} ({pct_diff:.1f}%) higher per-claim coverage"
+            )
+        elif limit2 > limit1 and limit1 > 0:
+            diff = limit2 - limit1
+            pct_diff = (diff / limit1) * 100
+            comparison_parts.append(
+                f"{quote2.company_name} offers SAR {diff:,.0f} ({pct_diff:.1f}%) higher per-claim coverage"
+            )
+        else:
+            comparison_parts.append("Similar per-claim coverage limits")
+
+        # Compare aggregate limits (if available)
+        if liability1 and hasattr(liability1, 'aggregate_annual_limit') and liability1.aggregate_annual_limit:
+            agg1 = float(liability1.aggregate_annual_limit)
+        else:
+            agg1 = 0
+
+        if liability2 and hasattr(liability2, 'aggregate_annual_limit') and liability2.aggregate_annual_limit:
+            agg2 = float(liability2.aggregate_annual_limit)
+        else:
+            agg2 = 0
+
+        if agg1 > 0 and agg2 > 0:
+            if agg1 > agg2:
+                diff = agg1 - agg2
+                comparison_parts.append(
+                    f"{quote1.company_name} has SAR {diff:,.0f} higher aggregate annual limit"
+                )
+            elif agg2 > agg1:
+                diff = agg2 - agg1
+                comparison_parts.append(
+                    f"{quote2.company_name} has SAR {diff:,.0f} higher aggregate annual limit"
+                )
+
+        # Compare defense costs structure
+        if liability1 and hasattr(liability1, 'defense_costs_inside_limit'):
+            defense1 = liability1.defense_costs_inside_limit
+        else:
+            defense1 = None
+
+        if liability2 and hasattr(liability2, 'defense_costs_inside_limit'):
+            defense2 = liability2.defense_costs_inside_limit
+        else:
+            defense2 = None
+
+        if defense1 is not None and defense2 is not None:
+            if defense1 == False and defense2 == True:
+                comparison_parts.append(
+                    f"{quote1.company_name} has BETTER defense costs structure (outside limit, preserves full coverage)"
+                )
+            elif defense2 == False and defense1 == True:
+                comparison_parts.append(
+                    f"{quote2.company_name} has BETTER defense costs structure (outside limit, preserves full coverage)"
+                )
+
+        return "; ".join(comparison_parts) if comparison_parts else "Similar coverage"
+
     @staticmethod
     def _determine_winner(quote1: ExtractedQuoteData, quote2: ExtractedQuoteData) -> str:
         """Determine which quote is better overall."""

@@ -7,6 +7,7 @@ This file now imports from scheme.py to avoid duplication.
 
 # Import all models from the consolidated scheme.py
 from .scheme import (
+    LiabilityLimitStructure,
     ExtractedQuoteData,
     RankedQuote,
     ComparisonResponse,
@@ -19,8 +20,9 @@ from .scheme import (
 
 # Re-export for backward compatibility
 __all__ = [
+    "LiabilityLimitStructure",
     "ExtractedQuoteData",
-    "RankedQuote", 
+    "RankedQuote",
     "ComparisonResponse",
     "SideBySideComparison",
     "KeyDifference",
