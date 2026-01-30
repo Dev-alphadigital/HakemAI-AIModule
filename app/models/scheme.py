@@ -21,6 +21,8 @@ class ExtractedQuoteData(BaseModel):
     
     # Basic Information
     company_name: str = Field(..., description="Insurance company name")
+    insurer_detection_method: Optional[str] = Field(None, description="Detection method: filename, text_match, pattern, ai, ocr, format_override")
+    insurer_confidence: Optional[str] = Field(None, description="Detection confidence: high, medium, low")
     policy_type: Optional[str] = Field(None, description="Type of insurance policy")
     policy_number: Optional[str] = Field(None, description="Policy number if available")
     
@@ -29,6 +31,15 @@ class ExtractedQuoteData(BaseModel):
     premium_frequency: Optional[str] = Field(None, description="monthly, annual, quarterly")
     rate: Optional[str] = Field(None, description="Rate description (e.g., '0.35‰')")
     total_annual_cost: Optional[float] = Field(None, description="Total annual cost with fees/VAT")
+    vat_amount: Optional[float] = Field(None, description="VAT amount (15% of premium + fees)")
+    vat_percentage: Optional[float] = Field(None, description="VAT percentage applied (default 15%)")
+    premium_includes_vat: Optional[bool] = Field(False, description="Whether original premium included VAT (always False after normalization)")
+    
+    # Quote Status & VAT Classification (v8.1 - Signal-Based Enforcement)
+    quote_status: Optional[str] = Field("accepted", description="Quote status: 'accepted' | 'rejected'")
+    rejection_reason: Optional[str] = Field(None, description="Reason for rejection if quote_status is 'rejected'")
+    vat_signal_type: Optional[str] = Field(None, description="VAT signal type: FINANCIAL_LINE_ITEM | PRICE_ANNOTATION | LEGAL_CLAUSE | NONE")
+    vat_class: Optional[str] = Field(None, description="VAT classification: P1 (VAT-inclusive) | P2 (VAT-exclusive) | P3 (VAT-deferred) | P5/P6 (disallowed)")
     
     # Coverage Details
     score: Optional[float] = Field(None, description="Overall quality score 0-100")

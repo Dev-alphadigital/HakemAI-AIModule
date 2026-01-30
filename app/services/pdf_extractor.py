@@ -69,41 +69,41 @@ class PDFExtractor:
     def extract_logo_from_pdf(file_path: str) -> Optional[str]:
         """
         Extract the company logo (first substantial image) from PDF.
-        
+
         Args:
             file_path: Path to the PDF file
-            
+
         Returns:
             Base64 encoded logo image or None
         """
         if not settings.ENABLE_LOGO_EXTRACTION:
             return None
-            
+
         try:
             logger.info(f"Attempting to extract logo from PDF: {file_path}")
-            
+
             doc = fitz.open(file_path)
-            
+
             # Check first 2 pages for logos (usually on first page)
             for page_num in range(min(2, len(doc))):
                 page = doc[page_num]
                 image_list = page.get_images(full=True)
-                
+
                 # Look for suitable logo images
                 for img_index, img in enumerate(image_list):
                     try:
                         xref = img[0]
                         base_image = doc.extract_image(xref)
                         image_bytes = base_image["image"]
-                        
+
                         # Skip very small or very large images
                         if len(image_bytes) < 1000 or len(image_bytes) > settings.MAX_LOGO_SIZE:
                             continue
-                        
+
                         # Try to open and validate the image
                         image = Image.open(BytesIO(image_bytes))
                         width, height = image.size
-                        
+
                         # Logo typically in header, reasonable dimensions
                         # Aspect ratio and size checks for typical logos
                         if 50 < width < 800 and 50 < height < 400:
@@ -111,21 +111,85 @@ class PDFExtractor:
                             buffer = BytesIO()
                             image.save(buffer, format="PNG")
                             img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                            
+
                             doc.close()
                             logger.info(f"Successfully extracted logo from PDF page {page_num + 1}")
                             return f"data:image/png;base64,{img_base64}"
-                    
+
                     except Exception as img_error:
                         logger.debug(f"Skipping image {img_index}: {str(img_error)}")
                         continue
-            
+
             doc.close()
             logger.info("No suitable logo found in PDF")
             return None
-            
+
         except Exception as e:
             logger.error(f"Error extracting logo from PDF {file_path}: {str(e)}")
+            return None
+
+    @staticmethod
+    def extract_logo_bytes_from_pdf(file_path: str) -> Optional[bytes]:
+        """
+        Extract the company logo (first substantial image) from PDF as raw bytes.
+        Used for OCR processing - returns raw image bytes instead of base64 string.
+
+        Args:
+            file_path: Path to the PDF file
+
+        Returns:
+            Raw image bytes (PNG format) or None if no suitable logo found
+        """
+        if not settings.ENABLE_LOGO_EXTRACTION:
+            return None
+
+        try:
+            logger.info(f"Attempting to extract logo bytes from PDF: {file_path}")
+
+            doc = fitz.open(file_path)
+
+            # Check first 2 pages for logos (usually on first page)
+            for page_num in range(min(2, len(doc))):
+                page = doc[page_num]
+                image_list = page.get_images(full=True)
+
+                # Look for suitable logo images
+                for img_index, img in enumerate(image_list):
+                    try:
+                        xref = img[0]
+                        base_image = doc.extract_image(xref)
+                        image_bytes = base_image["image"]
+
+                        # Skip very small or very large images
+                        if len(image_bytes) < 1000 or len(image_bytes) > settings.MAX_LOGO_SIZE:
+                            continue
+
+                        # Try to open and validate the image
+                        image = Image.open(BytesIO(image_bytes))
+                        width, height = image.size
+
+                        # Logo typically in header, reasonable dimensions
+                        # Aspect ratio and size checks for typical logos
+                        if 50 < width < 800 and 50 < height < 400:
+                            # Convert to PNG format for consistency
+                            buffer = BytesIO()
+                            image.save(buffer, format="PNG")
+                            logo_bytes = buffer.getvalue()
+
+                            doc.close()
+                            logger.info(f"Successfully extracted logo bytes from PDF page {page_num + 1} ({len(logo_bytes)} bytes)")
+                            return logo_bytes
+
+                    except Exception as img_error:
+                        logger.debug(f"Skipping image {img_index}: {str(img_error)}")
+                        continue
+
+            doc.close()
+            logger.info("No suitable logo found in PDF")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error extracting logo bytes from PDF {file_path}: {str(e)}")
             return None
     
     @staticmethod

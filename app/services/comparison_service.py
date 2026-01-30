@@ -4,6 +4,7 @@ import logging
 import re
 from difflib import SequenceMatcher
 from app.models.quote_model import ExtractedQuoteData, SideBySideComparison, KeyDifference
+from app.services.ai_ranker import _get_normalized_premium_for_comparison as _get_normalized_premium
 
 logger = logging.getLogger(__name__)
 
@@ -52,28 +53,36 @@ class ComparisonService:
     def validate_comparable_quotes(quote1: ExtractedQuoteData, quote2: ExtractedQuoteData) -> bool:
         """
         Check if two quotes are comparable.
-        
+
         Args:
             quote1: First quote
             quote2: Second quote
-            
+
         Returns:
             True if quotes can be compared, False otherwise
         """
         type1 = (quote1.policy_type or "").lower()
         type2 = (quote2.policy_type or "").lower()
-        
+
         property_keywords = ['property', 'fire', 'all risk', 'material damage', 'business interruption']
         is_property1 = any(k in type1 for k in property_keywords)
         is_property2 = any(k in type2 for k in property_keywords)
-        
+
         liability_keywords = ['liability', 'cgl', 'general liability', 'third party']
         is_liability1 = any(k in type1 for k in liability_keywords)
         is_liability2 = any(k in type2 for k in liability_keywords)
-        
+
         if (is_property1 and is_property2) or (is_liability1 and is_liability2):
+            # Additional check: Warn if comparing quotes with different VAT classes
+            vat_class1 = getattr(quote1, 'vat_class', None)
+            vat_class2 = getattr(quote2, 'vat_class', None)
+
+            if vat_class1 and vat_class2 and vat_class1 != vat_class2:
+                logger.warning(f"⚠️ Comparing quotes with different VAT classes: {vat_class1} vs {vat_class2}")
+                logger.warning("   Premium amounts may not be directly comparable")
+
             return True
-        
+
         logger.warning(f"⚠️ Cannot compare: '{type1}' vs '{type2}' - different policy types")
         return False
     
@@ -92,6 +101,15 @@ class ComparisonService:
         Returns:
             SideBySideComparison object with detailed comparison, or None if not comparable
         """
+        
+        # Reject if either quote is rejected
+        if getattr(quote1, 'quote_status', 'accepted') != 'accepted':
+            logger.warning(f"❌ Cannot compare - quote1 ({quote1.company_name}) is rejected")
+            return None
+        
+        if getattr(quote2, 'quote_status', 'accepted') != 'accepted':
+            logger.warning(f"❌ Cannot compare - quote2 ({quote2.company_name}) is rejected")
+            return None
         
         if not ComparisonService.validate_comparable_quotes(quote1, quote2):
             logger.warning(f"❌ Cannot compare {quote1.company_name} with {quote2.company_name} - different policy types")
@@ -137,7 +155,16 @@ class ComparisonService:
         Returns:
             Dictionary with policy type as key, ranked list of quotes as value
         """
-        grouped = ComparisonService.group_quotes_by_policy_type(quotes)
+        # Filter out rejected quotes
+        valid_quotes = [
+            q for q in quotes 
+            if getattr(q, 'quote_status', 'accepted') == 'accepted'
+        ]
+        
+        if len(valid_quotes) < len(quotes):
+            logger.warning(f"⚠️ ComparisonService: Filtered out {len(quotes) - len(valid_quotes)} rejected quote(s)")
+        
+        grouped = ComparisonService.group_quotes_by_policy_type(valid_quotes)
         
         results = {}
         
@@ -149,14 +176,14 @@ class ComparisonService:
             
             sorted_quotes = sorted(
                 quotes_list,
-                key=lambda q: (-(q.score or 0), q.premium_amount or float('inf'))
+                key=lambda q: (-(q.score or 0), _get_normalized_premium(q) or float('inf'))
             )
             
             ranked = []
             for idx, quote in enumerate(sorted_quotes, 1):
                 if idx == 1 and (quote.score or 0) >= 85:
                     badge = "Recommended"
-                elif quote.premium_amount and quote.premium_amount == min(q.premium_amount or float('inf') for q in quotes_list):
+                elif _get_normalized_premium(quote) > 0 and _get_normalized_premium(quote) == min(_get_normalized_premium(q) or float('inf') for q in quotes_list):
                     badge = "Best Value"
                 elif (quote.score or 0) >= 80:
                     badge = "Good Option"
@@ -175,7 +202,7 @@ class ComparisonService:
                     "ia_compliant": ia_compliant,
                     "score": quote.score or 0,
                     "recommendation_badge": badge,
-                    "premium": quote.premium_amount or 0,
+                    "premium": _get_normalized_premium(quote),
                     "rate": quote.rate,
                     "annual_cost": quote.total_annual_cost or 0,
                     "policy_type": quote.policy_type,
@@ -218,8 +245,8 @@ class ComparisonService:
         elif score2 > score1:
             return quote2.company_name
         else:
-            premium1 = quote1.premium_amount or float('inf')
-            premium2 = quote2.premium_amount or float('inf')
+            premium1 = _get_normalized_premium(quote1) or float('inf')
+            premium2 = _get_normalized_premium(quote2) or float('inf')
             
             if premium1 < premium2:
                 return quote1.company_name
@@ -690,7 +717,8 @@ class ComparisonService:
             client_name = getattr(quote, 'client_name', None) or getattr(quote, 'insured_name', 'Not specified')
             ia_compliant = getattr(quote, 'ia_compliant', False)
             company_name_ar = getattr(quote, 'company_name_ar', None)
-            
+            vat_class = getattr(quote, 'vat_class', None)
+
             providers.append({
                 'name': quote.company_name,
                 'name_ar': company_name_ar,
@@ -698,7 +726,8 @@ class ComparisonService:
                 'ia_compliant': ia_compliant,
                 'score': quote.score or 0,
                 'premium': quote.premium_amount or 0,
-                'rate': quote.rate or 'N/A'
+                'rate': quote.rate or 'N/A',
+                'vat_class': vat_class
             })
         
         comparison_matrix = {
@@ -736,6 +765,13 @@ class ComparisonService:
                 {
                     "provider": quote.company_name,
                     "value": quote.coverage_limit or "N/A"
+                }
+                for quote in quotes
+            ],
+            "vat_class": [
+                {
+                    "provider": quote.company_name,
+                    "value": getattr(quote, 'vat_class', 'N/A')
                 }
                 for quote in quotes
             ],
