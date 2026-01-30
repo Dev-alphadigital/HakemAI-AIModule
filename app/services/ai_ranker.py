@@ -1094,7 +1094,12 @@ def _calculate_score_by_category(
 
     # Route to appropriate scoring function
     if category == 'liability':
-        return _calculate_liability_score(quote, all_quotes, weights)
+        # For liability, use LIABILITY_WEIGHTS (don't pass DEFAULT_WEIGHTS)
+        # Only use custom weights if they contain liability-specific keys
+        if weights and 'per_claim_coverage' in weights:
+            return _calculate_liability_score(quote, all_quotes, weights)
+        else:
+            return _calculate_liability_score(quote, all_quotes, None)
     else:
         # Property and other types use existing weighted score
         # Need to extract all the list parameters from all_quotes
@@ -1845,8 +1850,58 @@ async def rank_and_compare_quotes(
         timestamp = int(datetime.now().timestamp())
         unique_id = uuid.uuid4().hex[:12]
         comparison_id = f"cmp_{timestamp}_{unique_id}"
-    
-    logger.info(f"🔍 Starting comprehensive comparison of {len(quotes)} quotes")
+
+    # ============================================================================
+    # CATEGORY-AWARE GROUPING (Phase 4: Liability Insurance Support)
+    # ============================================================================
+    # Group quotes by insurance_category to ensure property and liability
+    # are NOT compared against each other
+
+    grouped_by_category = defaultdict(list)
+
+    for quote in quotes:
+        category = getattr(quote, 'insurance_category', None)
+
+        if not category:
+            # Fallback: infer from policy_type
+            policy_type = (getattr(quote, 'policy_type', '') or '').lower()
+            if any(k in policy_type for k in ['liability', 'cgl', 'third party', 'professional indemnity']):
+                category = 'liability'
+            elif any(k in policy_type for k in ['property', 'fire', 'all risk', 'par', 'material damage']):
+                category = 'property'
+            else:
+                category = 'other'
+
+        grouped_by_category[category].append(quote)
+
+    # If we have multiple categories, process each separately
+    if len(grouped_by_category) > 1:
+        logger.info(f"📊 MIXED INSURANCE CATEGORIES detected: {list(grouped_by_category.keys())}")
+        logger.info(f"   Each category will be ranked separately (no cross-category comparison)")
+
+        # Process each category separately
+        category_results = {}
+        for category, category_quotes in grouped_by_category.items():
+            logger.info(f"\n{'='*80}")
+            logger.info(f"Processing {category.upper()} insurance ({len(category_quotes)} quotes)")
+            logger.info(f"{'='*80}")
+
+            # Recursive call for each category (will not have mixed categories)
+            category_result = await rank_and_compare_quotes(
+                quotes=category_quotes,
+                weights=None,  # Let each category use appropriate weights
+                comparison_id=f"{comparison_id}_{category}"
+            )
+            category_results[category] = category_result
+
+        # Build combined response with comparison_groups
+        logger.info(f"\n✅ All categories processed. Building combined response...")
+        return _build_multi_category_response(category_results, comparison_id, quotes)
+
+    # Single category - proceed with normal ranking
+    category = list(grouped_by_category.keys())[0]
+    logger.info(f"📁 Single category detected: {category.upper()}")
+    logger.info(f"🔍 Starting comprehensive comparison of {len(quotes)} {category} quotes")
     logger.info(f"⚖️ Using weights: {weights}")
     logger.info(f"🏆 Hakim Score integration enabled")
     
@@ -2063,8 +2118,151 @@ async def rank_and_compare_quotes(
     )
     
     logger.info("✅ Comprehensive comparison complete")
-    
+
     return comparison_response
+
+
+def _build_multi_category_response(
+    category_results: Dict[str, Dict],
+    comparison_id: str,
+    all_quotes: List[ExtractedQuoteData]
+) -> Dict:
+    """
+    Build combined response for mixed insurance categories.
+
+    When property and liability (or other types) are uploaded together,
+    this function combines their separate comparison results into a
+    structured response with comparison_groups.
+
+    Args:
+        category_results: Dict mapping category name to comparison result
+        comparison_id: Main comparison ID
+        all_quotes: All quotes (from all categories)
+
+    Returns:
+        Combined response with comparison_groups section
+    """
+    logger.info(f"🔨 Building multi-category response for {len(category_results)} categories")
+
+    # Build comparison_groups section
+    comparison_groups = {}
+
+    for category, result in category_results.items():
+        comparison_groups[category] = [{
+            'policy_type': category,
+            'comparison_count': result.get('total_quotes', 0),
+            'ranked_quotes': result.get('ranked_quotes', []),
+            'summary': result.get('summary', {}),
+            'side_by_side': result.get('side_by_side', {}),
+            'best_overall': result.get('summary', {}).get('best_overall', 'N/A'),
+            'best_value': result.get('summary', {}).get('best_value', 'N/A')
+        }]
+
+    # Combine extracted_quotes from all categories
+    all_extracted = []
+    all_ranked_quotes = []
+    all_provider_cards = []
+
+    for result in category_results.values():
+        all_extracted.extend(result.get('extracted_quotes', []))
+        all_ranked_quotes.extend(result.get('ranked_quotes', []))
+        all_provider_cards.extend(result.get('provider_cards', []))
+
+    # Count totals
+    total_quotes = sum(result.get('total_quotes', 0) for result in category_results.values())
+    total_processed = sum(result.get('total_quotes_processed', 0) for result in category_results.values())
+    total_rejected = sum(result.get('rejected_quotes_count', 0) for result in category_results.values())
+
+    # Get first category result for fallback fields
+    first_result = list(category_results.values())[0]
+
+    # Build a generic key_differences section (Frontend compatibility)
+    # Since categories shouldn't be compared, we provide a notice instead
+    key_differences = {
+        'differences': [],
+        'summary': f"Mixed insurance categories detected: {', '.join(comparison_groups.keys())}",
+        'recommendation': 'Please review each category separately',
+        'recommendation_reasoning': 'Different insurance types (property, liability, etc.) cannot be directly compared. Each category has been ranked separately. Please review the comparison_groups section for detailed rankings within each category.',
+        'note': 'Cross-category comparison not applicable'
+    }
+
+    # Add individual category recommendations
+    for category, result in category_results.items():
+        category_best = result.get('summary', {}).get('best_value', 'N/A')
+        if category_best != 'N/A':
+            key_differences['differences'].append({
+                'category': category,
+                'best_provider': category_best,
+                'quote_count': result.get('total_quotes', 0)
+            })
+
+    # Build combined summary with first category's structure
+    first_summary = first_result.get('summary', {})
+    combined_summary = {
+        'analysis_summary': f"Mixed insurance types comparison: {', '.join(comparison_groups.keys())}. Each category ranked separately.",
+        'categories': list(comparison_groups.keys()),
+        'note': "Quotes grouped by insurance category. Property and liability are NOT compared against each other.",
+        'hakim_score_enabled': True,
+        # Include fields from first category for backwards compatibility
+        'ranking': first_summary.get('ranking', []),
+        'best_overall': first_summary.get('best_overall', 'See comparison_groups'),
+        'best_value': first_summary.get('best_value', 'See comparison_groups'),
+        'policy_type': 'Mixed Categories',
+        'weights_used': first_summary.get('weights_used', {})
+    }
+
+    # Build combined response
+    combined_response = {
+        'comparison_id': comparison_id,
+        'status': 'completed',
+        'total_quotes': total_quotes,
+        'total_quotes_processed': total_processed,
+        'rejected_quotes_count': total_rejected,
+        'hakim_score_enabled': True,
+
+        # NEW: comparison_groups section (main difference from single-category)
+        'comparison_groups': comparison_groups,
+
+        # Combined extracted quotes
+        'extracted_quotes': all_extracted,
+
+        # Combined ranked quotes (for backwards compatibility)
+        'ranked_quotes': all_ranked_quotes,
+
+        # Summary with backwards compatibility
+        'summary': combined_summary,
+
+        # Key differences (Frontend expects this!)
+        'key_differences': key_differences,
+
+        # Side-by-side from first category (Frontend compatibility)
+        'side_by_side': first_result.get('side_by_side', {}),
+
+        # Analytics from first category (Frontend compatibility)
+        'analytics': first_result.get('analytics', {}),
+
+        # Combined provider cards
+        'provider_cards': all_provider_cards,
+
+        # Data table from first category (for backwards compatibility)
+        'data_table': first_result.get('data_table', {}),
+
+        # Processing metadata
+        'processing_timestamp': datetime.now().isoformat(),
+        'processing_summary': {
+            'total_files_uploaded': total_processed,
+            'successful_extractions': total_quotes,
+            'failed_extractions': total_rejected,
+            'status': 'All files processed successfully',
+            'categories_detected': list(comparison_groups.keys())
+        }
+    }
+
+    logger.info(f"✅ Multi-category response built:")
+    for category, quotes in comparison_groups.items():
+        logger.info(f"   - {category}: {quotes[0]['comparison_count']} quotes")
+
+    return combined_response
 
 
 async def _generate_best_provider_reasoning(
