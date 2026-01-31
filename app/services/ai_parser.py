@@ -2427,6 +2427,382 @@ def _generate_quote_fingerprint(company: str, policy_number: str, premium: float
     return fingerprint.lower().replace(' ', '').replace('\n', '')
 
 
+# ============================================================================
+# NEW HELPER FUNCTIONS FOR LIABILITY INSURANCE ENHANCEMENTS (v2.0)
+# Requirements #2-#6 from client liability reqs document
+# ============================================================================
+
+def _extract_sublimits_fallback(text: str, main_limit: float) -> List[Dict]:
+    """
+    FALLBACK: Extract liability sub-limits using pattern matching (Requirement #2).
+
+    Detects restrictive sub-limits like "Any one person: SAR 300K" that reduce
+    effective coverage even when main limit is higher (e.g., SAR 5M).
+
+    Args:
+        text: Full document text
+        main_limit: Main per-claim or aggregate limit
+
+    Returns:
+        List of sub-limit dicts with type, amount, description, triggers_penalty, penalty_reason
+    """
+    if not main_limit or main_limit == 0:
+        return []
+
+    sublimits = []
+
+    # Pattern: (pattern, sublimit_type)
+    sublimit_patterns = [
+        (r'any\s+one\s+person[:\s]+(?:SAR?\s*|SR\s*)?([0-9,]+)', 'per_person'),
+        (r'each\s+person[:\s]+(?:SAR?\s*|SR\s*)?([0-9,]+)', 'per_person'),
+        (r'per\s+individual[:\s]+(?:SAR?\s*|SR\s*)?([0-9,]+)', 'per_person'),
+        (r'per\s+person[:\s]+(?:SAR?\s*|SR\s*)?([0-9,]+)', 'per_person'),
+        (r'any\s+one\s+employee[:\s]+(?:SAR?\s*|SR\s*)?([0-9,]+)', 'per_employee'),
+        (r'per\s+employee[:\s]+(?:SAR?\s*|SR\s*)?([0-9,]+)', 'per_employee'),
+        (r'any\s+one\s+property[:\s]+(?:SAR?\s*|SR\s*)?([0-9,]+)', 'per_property'),
+        (r'per\s+property[:\s]+(?:SAR?\s*|SR\s*)?([0-9,]+)', 'per_property'),
+    ]
+
+    for pattern, sublimit_type in sublimit_patterns:
+        matches = re.finditer(pattern, text, re.IGNORECASE)
+        for match in matches:
+            amount_str = match.group(1).replace(',', '')
+            try:
+                amount = float(amount_str)
+
+                # Only flag if sub-limit is significantly lower than main limit (<80%)
+                if amount < main_limit * 0.8:
+                    sublimits.append({
+                        'type': sublimit_type,
+                        'amount': amount,
+                        'description': match.group(0).strip(),
+                        'triggers_penalty': True,
+                        'penalty_reason': f"Sub-limit (SAR {amount:,.0f}) is significantly lower than main limit (SAR {main_limit:,.0f}), restricting coverage"
+                    })
+                    logger.info(f"✓ Detected restrictive sub-limit: {sublimit_type} = SAR {amount:,.0f} (<80% of main limit)")
+            except (ValueError, IndexError):
+                continue
+
+    return sublimits
+
+
+def _normalize_project_based_premium(extracted_data: Dict, text: str) -> Dict:
+    """
+    Normalize per-project premiums to annual cost (Requirement #3).
+
+    Detects "per project" premiums and calculates estimated annual cost by
+    multiplying by project count if found in document.
+
+    Args:
+        extracted_data: Extracted data dict
+        text: Full document text
+
+    Returns:
+        Updated extracted_data with estimated_annual_premium and related fields
+    """
+    premium_basis = extracted_data.get('premium_basis', '').lower() if extracted_data.get('premium_basis') else ''
+    premium_frequency = extracted_data.get('premium_frequency', '').lower() if extracted_data.get('premium_frequency') else ''
+    premium_amount = extracted_data.get('premium_amount', 0)
+    project_count = extracted_data.get('project_count')
+
+    # Check if this is a per-project premium
+    is_per_project = 'per_project' in premium_basis or 'per_project' in premium_frequency or \
+                     'per_policy' in premium_basis or 'per_policy' in premium_frequency
+
+    if not is_per_project:
+        # Also check for patterns in text near premium mentions
+        premium_text_patterns = [
+            r'premium[:\s]+(?:SAR?\s*|SR\s*)?[\d,]+\s+per\s+project',
+            r'premium[:\s]+(?:SAR?\s*|SR\s*)?[\d,]+\s+per\s+policy',
+            r'per\s+project[:\s]+(?:SAR?\s*|SR\s*)?[\d,]+',
+            r'per\s+contract[:\s]+(?:SAR?\s*|SR\s*)?[\d,]+',
+        ]
+
+        for pattern in premium_text_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                is_per_project = True
+                extracted_data['premium_basis'] = 'per_project'
+                logger.info("✓ Detected per-project premium basis from text patterns")
+                break
+
+    if is_per_project:
+        if not project_count:
+            # Try to extract project count from text
+            project_count_patterns = [
+                r'(\d+)\s+projects?\s+per\s+year',
+                r'annual\s+project\s+volume[:\s]+(\d+)',
+                r'expected\s+(\d+)\s+projects?',
+                r'(\d+)\s+projects?\s+annually',
+                r'project\s+count[:\s]+(\d+)',
+            ]
+
+            for pattern in project_count_patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    project_count = int(match.group(1))
+                    extracted_data['project_count'] = project_count
+                    logger.info(f"✓ Extracted project count from text: {project_count} projects/year")
+                    break
+
+        if project_count and premium_amount:
+            # Calculate estimated annual premium
+            estimated_annual = premium_amount * project_count
+            extracted_data['estimated_annual_premium'] = estimated_annual
+            extracted_data['is_premium_estimated'] = True
+            extracted_data['premium_normalization_note'] = (
+                f"Per-project premium (SAR {premium_amount:,.0f}) × {project_count} projects/year = "
+                f"SAR {estimated_annual:,.0f} estimated annual cost"
+            )
+            logger.info(f"💰 Normalized per-project premium: SAR {estimated_annual:,.0f}")
+        else:
+            # Flag for manual entry
+            extracted_data['is_premium_estimated'] = False
+            extracted_data['premium_normalization_note'] = (
+                "⚠️ Per-project premium detected but project count not found. "
+                "Manual entry required for annual cost estimation."
+            )
+            logger.warning("⚠️ Per-project premium without project count - flagged for manual entry")
+
+    return extracted_data
+
+
+def _analyze_deductible_structure(deductible_text: str) -> Dict:
+    """
+    Analyze deductible structure for penalties/bonuses (Requirement #4).
+
+    Detects:
+    - Percentage deductibles (high risk) → 10-point penalty
+    - Split deductibles (property vs injury) → Use highest value
+    - NIL deductibles for injury → 5-point bonus
+
+    Args:
+        deductible_text: Deductible field text or structured data
+
+    Returns:
+        Dict with type, highest_value, has_percentage, has_nil, risk_flags
+    """
+    if not deductible_text:
+        return {
+            'type': 'unknown',
+            'highest_value': None,
+            'has_percentage': False,
+            'has_nil': False,
+            'risk_flags': []
+        }
+
+    text_lower = str(deductible_text).lower()
+    result = {
+        'type': 'fixed',
+        'highest_value': None,
+        'has_percentage': False,
+        'has_nil': False,
+        'risk_flags': []
+    }
+
+    # Check for percentage-based deductibles
+    percentage_patterns = [
+        r'\d+%\s*(?:of|on)\s*(?:claim|sum\s+insured|si|loss)',
+        r'\d+\s*percent\s*(?:of|on)\s*(?:claim|sum\s+insured|si|loss)',
+    ]
+
+    for pattern in percentage_patterns:
+        if re.search(pattern, text_lower):
+            result['type'] = 'percentage'
+            result['has_percentage'] = True
+            result['risk_flags'].append('percentage_high_risk')
+            logger.info("✓ Detected percentage deductible (high risk)")
+            break
+
+    # Check for NIL/zero deductibles
+    nil_patterns = [
+        r'\bnil\b',
+        r'zero\s+deductible',
+        r'no\s+deductible',
+        r'sar\s*0\b',
+        r'sr\s*0\b',
+    ]
+
+    for pattern in nil_patterns:
+        if re.search(pattern, text_lower):
+            result['has_nil'] = True
+            # Check if NIL applies to injury/bodily injury (bonus condition)
+            if re.search(r'(?:injury|bodily|death|third\s+party)', text_lower):
+                result['risk_flags'].append('nil_injury_bonus')
+                logger.info("✓ Detected NIL deductible for injury coverage (bonus)")
+            break
+
+    # Check for split deductibles (different values for different coverage)
+    split_patterns = [
+        r'property.*?(?:injury|bodily)',
+        r'bodily.*?property',
+        r'(?:property\s+damage|pd).*?(?:bodily\s+injury|bi)',
+        r'(?:bodily\s+injury|bi).*?(?:property\s+damage|pd)',
+    ]
+
+    for pattern in split_patterns:
+        if re.search(pattern, text_lower, re.DOTALL):
+            result['type'] = 'split'
+            result['risk_flags'].append('split_property_vs_injury')
+            logger.info("✓ Detected split deductible (property vs injury)")
+
+            # Extract both values and find highest
+            amount_patterns = [
+                r'(?:SAR?\s*|SR\s*)([\d,]+)',
+                r'([\d,]+)\s*(?:SAR|SR)',
+            ]
+
+            amounts = []
+            for amt_pattern in amount_patterns:
+                matches = re.findall(amt_pattern, text_lower)
+                for match in matches:
+                    try:
+                        amount = float(match.replace(',', ''))
+                        amounts.append(amount)
+                    except ValueError:
+                        continue
+
+            if amounts:
+                result['highest_value'] = max(amounts)
+                logger.info(f"   Highest deductible value: SAR {result['highest_value']:,.0f} (used for scoring)")
+            break
+
+    # If no split detected, try to extract a single amount
+    if not result['highest_value']:
+        amount_match = re.search(r'(?:SAR?\s*|SR\s*)([\d,]+)', str(deductible_text), re.IGNORECASE)
+        if amount_match:
+            try:
+                result['highest_value'] = float(amount_match.group(1).replace(',', ''))
+            except ValueError:
+                pass
+
+    return result
+
+
+def _normalize_liability_field_synonyms(liability_data: Dict) -> Dict:
+    """
+    Normalize synonym fields to standard names (Requirement #5).
+
+    Maps various insurer-specific terms to standard field names:
+    - "Limit of Indemnity" (Al Sagr) → per_claim_occurrence_limit
+    - "Limit of Liability" (UCA) → per_claim_occurrence_limit
+    - "Any One Occurrence" → per_claim_occurrence_limit
+
+    Args:
+        liability_data: Raw liability structure dict from AI extraction
+
+    Returns:
+        Normalized liability_data with standard field names
+    """
+    if not liability_data or not isinstance(liability_data, dict):
+        return liability_data or {}
+
+    # Synonym mappings: {synonym_field: standard_field}
+    synonym_mappings = {
+        # Per-claim synonyms → standard field
+        'limit_of_liability': 'per_claim_occurrence_limit',
+        'limit_of_indemnity': 'per_claim_occurrence_limit',
+        'indemnity_limit': 'per_claim_occurrence_limit',
+        'any_one_claim': 'per_claim_occurrence_limit',
+        'each_occurrence': 'per_claim_occurrence_limit',
+        'any_one_occurrence': 'per_claim_occurrence_limit',
+        'any_one_occurrence_limit': 'per_claim_occurrence_limit',
+        'per_occurrence': 'per_claim_occurrence_limit',
+        'per_occurrence_limit': 'per_claim_occurrence_limit',
+
+        # Aggregate synonyms → standard field
+        'annual_aggregate': 'aggregate_annual_limit',
+        'total_limit': 'aggregate_annual_limit',
+        'in_the_aggregate': 'aggregate_annual_limit',
+        'aggregate_limit': 'aggregate_annual_limit',
+    }
+
+    normalized_count = 0
+    for synonym, standard_field in synonym_mappings.items():
+        # If synonym exists and standard field doesn't, copy the value
+        if synonym in liability_data and not liability_data.get(standard_field):
+            liability_data[standard_field] = liability_data[synonym]
+            normalized_count += 1
+            logger.info(f"✓ Normalized synonym: '{synonym}' → '{standard_field}'")
+
+    if normalized_count > 0:
+        logger.info(f"✓ Normalized {normalized_count} liability field synonym(s)")
+
+    return liability_data
+
+
+def _calculate_implied_rate(premium: float, limit: float, stated_rate_str: str) -> Dict:
+    """
+    Calculate implied rate from premium and limit, compare with stated rate (Requirement #6).
+
+    Formula: Rate = (Premium / Limit) × 1000  (per mille basis)
+
+    This provides a sanity check since OCR often misreads rate symbols (e.g., "0.93%%" typos).
+
+    Args:
+        premium: Premium amount (before VAT)
+        limit: Coverage limit (per-claim or sum insured)
+        stated_rate_str: Rate as stated in document (e.g., "0.35‰")
+
+    Returns:
+        Dict with calculated_rate, stated_rate, discrepancy, validation_flag
+    """
+    if not premium or not limit or premium == 0 or limit == 0:
+        return {
+            'calculated_rate': None,
+            'stated_rate': None,
+            'discrepancy': None,
+            'validation_flag': 'insufficient_data'
+        }
+
+    # Calculate implied rate (per mille)
+    calculated_rate = (premium / limit) * 1000
+
+    # Parse stated rate using existing helper
+    stated_rate = None
+    if stated_rate_str:
+        # Try to extract numeric value from rate string
+        rate_match = re.search(r'(\d+\.?\d*)', str(stated_rate_str))
+        if rate_match:
+            try:
+                stated_rate = float(rate_match.group(1))
+            except ValueError:
+                pass
+
+    result = {
+        'calculated_rate': round(calculated_rate, 3)
+    }
+
+    if stated_rate and stated_rate > 0:
+        # Compare stated vs calculated
+        discrepancy = abs(calculated_rate - stated_rate)
+        discrepancy_pct = (discrepancy / stated_rate) * 100 if stated_rate > 0 else 0
+
+        result['stated_rate'] = stated_rate
+        result['discrepancy'] = round(discrepancy, 3)
+
+        if discrepancy_pct < 5:
+            result['validation_flag'] = 'rate_match'
+            logger.info(f"✓ Rate validation: Stated {stated_rate:.3f}‰ ≈ Calculated {calculated_rate:.3f}‰")
+        elif discrepancy_pct < 20:
+            result['validation_flag'] = 'rate_mismatch_minor'
+            logger.warning(f"⚠️ Rate mismatch (minor): Stated {stated_rate:.3f}‰ vs Calculated {calculated_rate:.3f}‰ "
+                          f"({discrepancy_pct:.1f}% difference)")
+        else:
+            result['validation_flag'] = 'rate_mismatch_major'
+            logger.error(f"❌ Rate mismatch (MAJOR): Stated {stated_rate:.3f}‰ vs Calculated {calculated_rate:.3f}‰ "
+                        f"({discrepancy_pct:.1f}% difference)")
+    else:
+        result['stated_rate'] = None
+        result['discrepancy'] = None
+        result['validation_flag'] = 'rate_missing'
+        logger.info(f"ℹ️ Rate not stated in document. Calculated rate: {calculated_rate:.3f}‰")
+
+    return result
+
+
+# ============================================================================
+
+
 def _calculate_quality_score(extracted_data: Dict) -> Tuple[float, Dict]:
     """
     Calculate extraction quality score with breakdown.

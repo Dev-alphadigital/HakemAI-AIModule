@@ -13,6 +13,29 @@ from datetime import datetime
 # CORE MODELS
 # ========================================================================
 
+class SubLimit(BaseModel):
+    """
+    Individual sub-limit within main liability coverage limit.
+
+    Sub-limits restrict coverage for specific categories (e.g., per person, per property)
+    even when the main limit is higher. These are common in liability insurance and
+    significantly impact coverage quality.
+
+    Example: Main limit SAR 5M, but "Any one person: SAR 300K" restricts individual claims.
+    """
+    type: str = Field(..., description="Sub-limit type: per_person, per_property, per_product, per_employee")
+    amount: float = Field(..., description="Sub-limit amount in SAR")
+    description: Optional[str] = Field(None, description="Full text describing sub-limit from document")
+    triggers_penalty: bool = Field(False, description="Whether this sub-limit triggers 15-point scoring penalty")
+    penalty_reason: Optional[str] = Field(None, description="Explanation of why penalty applies")
+
+    class Config:
+        extra = "allow"
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
+
 class LiabilityLimitStructure(BaseModel):
     """
     Liability insurance limit structure - differs fundamentally from property insurance.
@@ -74,6 +97,17 @@ class LiabilityLimitStructure(BaseModel):
         description="ERP/tail coverage period (e.g., '12 months', '24 months')"
     )
 
+    # Sub-Limits (NEW - Requirement #2: Sub-limit detection)
+    sublimits: Optional[List[SubLimit]] = Field(
+        default_factory=list,
+        description="Inner sub-limits within main coverage (e.g., 'Any one person: SAR 300K' restricts individual claims)"
+    )
+
+    has_restrictive_sublimits: Optional[bool] = Field(
+        False,
+        description="Flag indicating presence of restrictive sub-limits that significantly reduce effective coverage (triggers scoring penalty)"
+    )
+
     class Config:
         extra = "allow"
         json_encoders = {
@@ -107,8 +141,52 @@ class ExtractedQuoteData(BaseModel):
     
     # Pricing Information
     premium_amount: Optional[float] = Field(None, description="Premium amount")
-    premium_frequency: Optional[str] = Field(None, description="monthly, annual, quarterly")
+    premium_frequency: Optional[str] = Field(None, description="monthly, annual, quarterly, per_project, per_policy")
+
+    # Premium Normalization (NEW - Requirement #3: Per-project premium handling)
+    premium_basis: Optional[str] = Field(
+        None,
+        description="Premium calculation basis: annual, per_project, per_policy, per_transaction"
+    )
+
+    project_count: Optional[int] = Field(
+        None,
+        description="Number of projects/policies per year (for per-project premiums)"
+    )
+
+    estimated_annual_premium: Optional[float] = Field(
+        None,
+        description="Estimated annual premium (original premium × project_count if per-project basis)"
+    )
+
+    is_premium_estimated: bool = Field(
+        False,
+        description="Whether annual premium is estimated (true for per-project basis)"
+    )
+
+    premium_normalization_note: Optional[str] = Field(
+        None,
+        description="Explanation of premium normalization calculation"
+    )
+
     rate: Optional[str] = Field(None, description="Rate description (e.g., '0.35‰')")
+
+    # Rate Validation (NEW - Requirement #6: Implied rate calculation)
+    calculated_rate: Optional[float] = Field(
+        None,
+        description="Rate calculated from (Premium / Limit) × 1000 for validation (per mille basis)"
+    )
+
+    rate_discrepancy: Optional[float] = Field(
+        None,
+        description="Difference between stated rate and calculated rate (absolute value)"
+    )
+
+    rate_validation_flag: Optional[str] = Field(
+        None,
+        description="Validation status: rate_match, rate_mismatch_minor, rate_mismatch_major, rate_missing, insufficient_data"
+    )
+
     total_annual_cost: Optional[float] = Field(None, description="Total annual cost with fees/VAT")
     vat_amount: Optional[float] = Field(None, description="VAT amount (15% of premium + fees)")
     vat_percentage: Optional[float] = Field(None, description="VAT percentage applied (default 15%)")
@@ -125,10 +203,36 @@ class ExtractedQuoteData(BaseModel):
     
     # FIXED: Deductible can be string, number, dict, or null
     deductible: Optional[Union[str, float, Dict[str, Any]]] = Field(
-        None, 
+        None,
         description="Deductible (flexible: can be string description, amount, or structured dict)"
     )
-    
+
+    # Deductible Analysis (NEW - Requirement #4: Split/Percentage/NIL handling)
+    deductible_type: Optional[str] = Field(
+        None,
+        description="Deductible type: fixed, percentage, split, nil, tiered"
+    )
+
+    deductible_highest_value: Optional[float] = Field(
+        None,
+        description="Highest deductible value for scoring (used for split deductibles - worst case scenario)"
+    )
+
+    has_percentage_deductible: bool = Field(
+        False,
+        description="Whether deductible is percentage-based (high risk, triggers 10-point penalty)"
+    )
+
+    has_nil_deductible: bool = Field(
+        False,
+        description="Whether deductible is NIL/zero for injury coverage (triggers 5-point bonus)"
+    )
+
+    deductible_risk_flags: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Risk flags: percentage_high_risk, split_property_vs_injury, nil_injury_bonus"
+    )
+
     coverage_limit: Optional[str] = Field(None, description="Maximum coverage (string display)")
     sum_insured_total: Optional[float] = Field(None, description="Total sum insured (numeric value)")  # CRITICAL FIX
     coverage_percentage: Optional[float] = Field(None, description="Coverage percentage")
