@@ -226,6 +226,35 @@ LIABILITY_WEIGHTS = {
 
 logger.info("Liability scoring weights configured: Coverage-limit-aware evaluation")
 
+# ============================================================================
+# NEW LIABILITY WEIGHTS v2.0 - Client 40/30/30 Formula
+# Based on client requirements: 40% Commercial + 30% Coverage + 30% Insurer
+# ============================================================================
+
+NEW_LIABILITY_WEIGHTS = {
+    # COMMERCIAL FACTORS (40% total)
+    'premium_efficiency': 0.25,      # 25% - Premium per SAR 1M coverage
+    'rate': 0.15,                     # 15% - Rate per mille
+
+    # COVERAGE QUALITY (30% total)
+    'per_claim_coverage': 0.15,       # 15% - Per-claim limit amount
+    'aggregate_coverage': 0.07,       # 7% - Aggregate vs per-claim ratio
+    'defense_costs_bonus': 0.05,      # 5% - Defense costs outside limit
+    'coverage_breadth': 0.01,         # 1% - Number of benefits/extensions
+    'exclusions': 0.01,               # 1% - Fewer exclusions = better
+    'warranties': 0.01,               # 1% - Fewer warranties = better
+
+    # INSURER STRENGTH (30% total)
+    'provider_reputation': 0.30,      # 30% - Hakim Score (same as property)
+
+    # Total: 100% (0.25+0.15+0.15+0.07+0.05+0.01+0.01+0.01+0.30 = 1.00)
+}
+
+# Feature flag - set to True to use new formula
+USE_NEW_LIABILITY_FORMULA = True
+
+logger.info("NEW Liability scoring weights v2.0 configured: 40% Commercial + 30% Coverage + 30% Insurer")
+
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -282,9 +311,19 @@ def _get_normalized_premium_for_comparison(quote: ExtractedQuoteData) -> float:
     - P2 (VAT-exclusive): Use stated premium as-is (VAT shown separately)
     - P3 (VAT-deferred): Use stated premium as-is (VAT charged at billing)
 
+    PHASE 2 Liability Enhancement:
+    - Per-project premiums: Use estimated_annual_premium if available
+
     Returns:
         Premium amount for comparison purposes
     """
+    # PHASE 2: Check for estimated annual premium (per-project premiums)
+    if hasattr(quote, 'estimated_annual_premium') and quote.estimated_annual_premium:
+        is_estimated = getattr(quote, 'is_premium_estimated', False)
+        if is_estimated:
+            logger.info(f"Using estimated annual premium for {quote.company_name}: SAR {quote.estimated_annual_premium:,.0f}")
+            return float(quote.estimated_annual_premium)
+
     premium = _normalize_premium(quote.premium_amount) or 0
 
     # P3 handling: Use stated premium (VAT not in quote)
@@ -862,8 +901,14 @@ def _calculate_liability_score(
     Returns:
         (total_score, score_breakdown)
     """
+    # PHASE 2: Use new weights if flag enabled
     if weights is None:
-        weights = LIABILITY_WEIGHTS
+        if USE_NEW_LIABILITY_FORMULA:
+            weights = NEW_LIABILITY_WEIGHTS
+            logger.info("Using NEW LIABILITY WEIGHTS v2.0 (40/30/30 formula)")
+        else:
+            weights = LIABILITY_WEIGHTS
+            logger.info("Using LEGACY LIABILITY WEIGHTS")
 
     score_breakdown = {}
 
@@ -895,6 +940,20 @@ def _calculate_liability_score(
 
     score_breakdown['per_claim_coverage'] = per_claim_score * weights['per_claim_coverage']
     logger.debug(f"  Per-Claim Coverage: {per_claim_score:.1f} (limit: SAR {per_claim_limit:,.0f})")
+
+    # PHASE 2: Apply sub-limit penalty (Requirement #2)
+    sublimit_penalty = 0.0
+    if liability and hasattr(liability, 'sublimits') and liability.sublimits:
+        # Check for restrictive sub-limits
+        for sublimit in liability.sublimits:
+            if isinstance(sublimit, dict) and sublimit.get('triggers_penalty'):
+                sublimit_penalty += 15.0  # 15-point penalty per restrictive sub-limit
+                logger.warning(f"⚠️ Sub-limit penalty applied: {sublimit.get('type')} = SAR {sublimit.get('amount', 0):,.0f} "
+                             f"({sublimit.get('penalty_reason', 'Restricts coverage')})")
+
+    if sublimit_penalty > 0:
+        score_breakdown['sublimit_penalty'] = -sublimit_penalty
+        logger.info(f"💥 Total sub-limit penalty: -{sublimit_penalty:.1f} points")
 
     # COMPONENT 2: AGGREGATE COVERAGE BONUS (10%)
     # If aggregate > per-claim, provider offers more total coverage
@@ -1029,6 +1088,25 @@ def _calculate_liability_score(
 
     score_breakdown['warranties'] = warranties_score * weights['warranties']
 
+    # PHASE 2: Apply deductible adjustments (Requirement #4)
+    deductible_adjustment = 0.0
+    deductible_risk_flags = getattr(quote, 'deductible_risk_flags', [])
+
+    if deductible_risk_flags:
+        # Penalty: Percentage deductibles are high risk
+        if 'percentage_high_risk' in deductible_risk_flags:
+            deductible_adjustment -= 10.0
+            logger.warning("⚠️ Deductible penalty: Percentage-based deductible detected (-10 points)")
+
+        # Bonus: NIL deductible for injury coverage
+        if 'nil_injury_bonus' in deductible_risk_flags:
+            deductible_adjustment += 5.0
+            logger.info("✅ Deductible bonus: NIL deductible for injury coverage (+5 points)")
+
+    if deductible_adjustment != 0:
+        score_breakdown['deductible_adjustment'] = deductible_adjustment
+        logger.info(f"⚖️ Net deductible adjustment: {deductible_adjustment:+.1f} points")
+
     # COMPONENT 9: HAKIM SCORE (30%)
     # Same as property
     ia_compliant = getattr(quote, 'ia_compliant', False)
@@ -1039,7 +1117,7 @@ def _calculate_liability_score(
     score_breakdown['hakim_tier'] = hakim_tier
     score_breakdown['hakim_rank'] = hakim_rank
 
-    # TOTAL SCORE
+    # TOTAL SCORE (with PHASE 2 adjustments)
     total_score = sum([
         score_breakdown.get('per_claim_coverage', 0),
         score_breakdown.get('aggregate_coverage', 0),
@@ -1050,13 +1128,22 @@ def _calculate_liability_score(
         score_breakdown.get('exclusions', 0),
         score_breakdown.get('warranties', 0),
         score_breakdown.get('provider_reputation', 0),
+        score_breakdown.get('sublimit_penalty', 0),         # PHASE 2: Sub-limit penalty
+        score_breakdown.get('deductible_adjustment', 0),    # PHASE 2: Deductible adjustment
     ])
 
+    # Log detailed breakdown
     logger.info(f"LIABILITY SCORE for {quote.company_name}: {total_score:.2f}/100")
     logger.debug(f"  Breakdown: Coverage={score_breakdown.get('per_claim_coverage', 0):.1f}, "
                  f"Efficiency={score_breakdown.get('premium_efficiency', 0):.1f}, "
                  f"Defense={score_breakdown.get('defense_costs_bonus', 0):.1f}, "
                  f"Hakim={score_breakdown.get('provider_reputation', 0):.1f}")
+
+    # Log PHASE 2 adjustments if present
+    if score_breakdown.get('sublimit_penalty', 0) != 0:
+        logger.info(f"  Sub-limit Penalty: {score_breakdown.get('sublimit_penalty', 0):.1f}")
+    if score_breakdown.get('deductible_adjustment', 0) != 0:
+        logger.info(f"  Deductible Adjustment: {score_breakdown.get('deductible_adjustment', 0):+.1f}")
 
     return total_score, score_breakdown
 

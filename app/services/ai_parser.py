@@ -3784,8 +3784,15 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
                 try:
                     from app.models.scheme import LiabilityLimitStructure
 
+                    # PHASE 2: Normalize field synonyms (Requirement #5)
+                    liability_raw = _normalize_liability_field_synonyms(liability_raw)
+
+                    # Extract per-claim limit for sublimit detection
+                    per_claim_limit_raw = liability_raw.get('per_claim_occurrence_limit')
+                    per_claim_limit_value = _parse_currency_amount(str(per_claim_limit_raw)) if per_claim_limit_raw else None
+
                     liability_structure_data = LiabilityLimitStructure(
-                        per_claim_limit=_parse_currency_amount(str(liability_raw.get('per_claim_occurrence_limit', ''))) if liability_raw.get('per_claim_occurrence_limit') else None,
+                        per_claim_limit=per_claim_limit_value,
                         aggregate_annual_limit=_parse_currency_amount(str(liability_raw.get('aggregate_annual_limit', ''))) if liability_raw.get('aggregate_annual_limit') else None,
                         turnover_based=liability_raw.get('is_turnover_based', False),
                         turnover_multiplier=liability_raw.get('turnover_multiplier'),
@@ -3795,7 +3802,16 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
                         defense_costs_sublimit=_parse_currency_amount(str(liability_raw.get('defense_costs_sublimit', ''))) if liability_raw.get('defense_costs_sublimit') else None,
                         retroactive_date=liability_raw.get('retroactive_date'),
                         extended_reporting_period=liability_raw.get('extended_reporting_period')
-                    ).model_dump(exclude_none=True)
+                    )
+
+                    # PHASE 2: Extract sublimits fallback (Requirement #2)
+                    if per_claim_limit_value and per_claim_limit_value > 0:
+                        detected_sublimits = _extract_sublimits_fallback(text, per_claim_limit_value)
+                        if detected_sublimits:
+                            liability_structure_data.sublimits = detected_sublimits
+                            logger.info(f"✅ Detected {len(detected_sublimits)} restrictive sub-limit(s)")
+
+                    liability_structure_data = liability_structure_data.model_dump(exclude_none=True)
 
                     logger.info(f"✅ Liability structure extracted: {liability_structure_data}")
                 except Exception as e:
@@ -3928,7 +3944,36 @@ Keep strings SHORT. NO line breaks. Return ONLY valid JSON."""
             final_premium or 0
         )
         final_data['_quote_fingerprint'] = fingerprint
-        
+
+        # ====================================================================
+        # PHASE 2: LIABILITY INSURANCE POST-PROCESSING
+        # ====================================================================
+        if insurance_category == 'liability':
+            logger.info("🔧 Applying liability-specific post-processing...")
+
+            # Requirement #3: Normalize per-project premiums to annual cost
+            final_data = _normalize_project_based_premium(final_data, text)
+
+            # Requirement #4: Analyze deductible structure
+            deductible_analysis = _analyze_deductible_structure(final_data.get('deductible', ''))
+            final_data['deductible_type'] = deductible_analysis.get('type')
+            final_data['deductible_highest_value'] = deductible_analysis.get('highest_value')
+            final_data['deductible_has_percentage'] = deductible_analysis.get('has_percentage')
+            final_data['deductible_has_nil'] = deductible_analysis.get('has_nil')
+            final_data['deductible_risk_flags'] = deductible_analysis.get('risk_flags', [])
+
+            # Requirement #6: Calculate implied rate for validation
+            if liability_structure_data:
+                per_claim_limit = liability_structure_data.get('per_claim_limit')
+                if per_claim_limit and final_premium:
+                    rate_validation = _calculate_implied_rate(final_premium, per_claim_limit, rate_formatted)
+                    final_data['rate_calculated'] = rate_validation.get('calculated_rate')
+                    final_data['rate_stated'] = rate_validation.get('stated_rate')
+                    final_data['rate_discrepancy'] = rate_validation.get('discrepancy')
+                    final_data['rate_validation_flag'] = rate_validation.get('validation_flag')
+
+            logger.info("✅ Liability post-processing complete")
+
         # Calculate quality score
         quality_score, quality_breakdown = _calculate_quality_score(final_data)
         final_data['_quality_metrics'] = {
